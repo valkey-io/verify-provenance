@@ -96,22 +96,22 @@ runs:
         fi
 
     - name: Post Results to PR
-      if: failure() && steps.op.outputs.provenance_failed == "true" && inputs.mode == "check"
+      if: failure() && steps.op.outputs.provenance_failed == 'true' && inputs.mode == 'check'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
-        COMMENT="### ❌ Provenance Check Alert
-
-Potential code similarities detected with upstream repository.
-
-"
-        MATCHES=$(grep "matches" .provenance-output.log | sed "s/^[0-9:-]* \[INFO\] //" | sed "s/^/ - /")
-        COMMENT="${COMMENT}${MATCHES}
-
----
-*This check was performed automatically by the Provenance Guard Action.*"
-        REPO="${{ inputs.target_repo }}"
-        PR_NUMBER="${{ github.event.pull_request.number }}"
-        JSON_BODY=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$COMMENT")
-        curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}"              -H "Accept: application/vnd.github+json"              "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"              -d "$JSON_BODY"
+          COMMENT="### ❌ Provenance Check Alert
+          
+          Potential code similarities detected with upstream repository.
+          
+          "
+          MATCHES=$(grep "matches" .provenance-output.log | sed "s/^[0-9:-]* \[INFO\] //" | sed "s/^/ - /")
+          COMMENT="${COMMENT}${MATCHES}
+          
+          ---
+          *This check was performed automatically by the Provenance Guard Action.*"
+          REPO="${{ inputs.target_repo }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          JSON_BODY=$(python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$COMMENT")
+          curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}"              -H "Accept: application/vnd.github+json"              "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"              -d "$JSON_BODY"
