@@ -74,7 +74,7 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
 - `scripts/setup-action.sh`: Internal setup script (likely used by CI/Action environment).
 
 ## Git Configuration
-- **Commit Signatures**: All git commits must be signed. Ensure your local git configuration is correctly set up with your name and email.
+- **Commit Signatures**: All git commits must be signed using the `Signed-off-by` line. The agent must verify that the git global configuration for `user.name` and `user.email` are set. If they are missing, the agent should guide the user to configure them before attempting to commit.
 - **Commit Messages**:
   - **Title**: Use a short, descriptive phrase with meaningful semantics. Avoid using prefixes like "fix:" or "feat:". Do not reference project phases.
   - **Body**: For non-trivial changes, use a brief bulleted list (maximum 5 points) to capture major changes and their rationale.
