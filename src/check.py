@@ -125,17 +125,14 @@ def _layer1_method(candidate):
         return "whole_simhash"
     return "simhash"
 
-def _author_login(entry):
-    author = entry.get("author_login") or entry.get("author")
-    if isinstance(author, dict):
-        author = author.get("login")
-    return author.lower() if isinstance(author, str) else None
-
-def _same_author_pr_candidate(candidate, db_type, target_author):
-    if db_type != "pr" or not target_author:
-        return False
-    source_author = _author_login(candidate.get("entry", {}))
-    return bool(source_author and source_author == target_author.lower())
+def _source_pr_policy_info(pr_info):
+    if not isinstance(pr_info, dict):
+        return {}
+    return {
+        "number": pr_info.get("number"),
+        "title": pr_info.get("title"),
+        "author_login": author_login_from_info(pr_info),
+    }
 
 def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_date=False):
     files = fingerprint.get("files", {})
@@ -151,7 +148,7 @@ def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_d
 
     return sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
 
-def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None):
+def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None, source_info=None):
     score, shared_tokens, _ = deep_compare_diffs(target_diff, source_diff, config)
     match = matched_files[0] if matched_files else {}
     policy = evaluate_diff_exemption(
@@ -170,13 +167,16 @@ def _deep_validation_result(target_diff, source_diff, config, method, matched_fi
         "score": score,
         "method": method,
         "matched_files": matched_files or [],
+        "source_info": source_info,
     }
 
 def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token):
     try:
         owner, repo = config.source_repo.split("/")
+        source_info = None
         if db_type == "pr":
-            source_diff_raw, _ = fetch_pr_diff(owner, repo, candidate["entry"].get("number"), token)
+            source_diff_raw, source_info = fetch_pr_diff(owner, repo, candidate["entry"].get("number"), token)
+            source_info = _source_pr_policy_info(source_info)
         else:
             source_diff_raw = fetch_commit_diff(owner, repo, candidate["entry"].get("sha"), token)
 
@@ -196,6 +196,7 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
                     config,
                     "file_simhash+deep",
                     [match],
+                    source_info=source_info,
                 )
                 if result and (not best or result["score"] > best["score"]):
                     best = result
@@ -205,7 +206,13 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
                 return None
 
         valkey_combined = "\n".join(valkey_diff_files.values())
-        return _deep_validation_result(valkey_combined, source_diff, config, "whole_simhash+deep")
+        return _deep_validation_result(
+            valkey_combined,
+            source_diff,
+            config,
+            "whole_simhash+deep",
+            source_info=source_info,
+        )
     except Exception as e:
         logger.debug("Layer 2 validation failed for %s: %s", candidate.get("key"), e)
         return None
@@ -230,13 +237,55 @@ def _resolve_exact_candidate(candidate, db_type, target_author, diff_files, conf
     method = _exact_match_method(candidate)
     if not method:
         return None
-    if _same_author_pr_candidate(candidate, db_type, target_author):
-        return {"accepted": False, "reason": "same_author"}
     if not _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
         return {"accepted": False, "reason": "diff_exempt"}
     return {"accepted": True, "method": method, "deep_sim": 1.0}
 
-def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=None, diff_files=None, ignore_date=False, target_author=None):
+def _source_info_for_policy(candidate, db_type, config, token):
+    entry = candidate.get("entry", {}) if isinstance(candidate, dict) else {}
+    if db_type != "pr":
+        return entry
+    if entry.get("title") and author_login_from_info(entry):
+        return entry
+    if not token:
+        return entry
+    try:
+        owner, repo = config.source_repo.split("/")
+        return _source_pr_policy_info(fetch_pr_info(owner, repo, entry.get("number"), token))
+    except Exception as e:
+        logger.debug("Source PR metadata fetch failed for %s: %s", entry.get("number"), e)
+        return entry
+
+def _false_positive_filtered(candidate, db_type, method, config, target_author, target_title, diff_files, validation=None, source_info=None):
+    policy = evaluate_false_positive_filter(
+        candidate=candidate,
+        db_type=db_type,
+        method=method,
+        config=config,
+        target_author=target_author,
+        target_title=target_title,
+        target_diff_files=diff_files,
+        source_info=source_info,
+        validation=validation,
+    )
+    if policy["filtered"]:
+        logger.debug("Filtered candidate %s as %s", candidate.get("key"), policy["reason"])
+        return True
+    return False
+
+def find_matches(
+    fingerprint,
+    db,
+    threshold,
+    max_report,
+    db_type,
+    config,
+    date=None,
+    diff_files=None,
+    ignore_date=False,
+    target_author=None,
+    target_title=None,
+):
     candidates = layer1_find_candidates(fingerprint, db, db_type, config, date, ignore_date)
     if not candidates: return []
 
@@ -246,6 +295,18 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
         exact = _resolve_exact_candidate(cand, db_type, target_author, diff_files, config)
         if exact:
             if not exact["accepted"]:
+                continue
+            source_info = _source_info_for_policy(cand, db_type, config, token)
+            if _false_positive_filtered(
+                cand,
+                db_type,
+                exact["method"],
+                config,
+                target_author,
+                target_title,
+                diff_files,
+                source_info=source_info,
+            ):
                 continue
             cand.update({"method": exact["method"], "deep_sim": exact["deep_sim"]})
             results.append(cand)
@@ -260,6 +321,18 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
         validation = layer2_validate_candidate(diff_files, cand, db_type, config, token)
         if not validation or validation["score"] < threshold:
             continue
+        if _false_positive_filtered(
+            cand,
+            db_type,
+            validation["method"],
+            config,
+            target_author,
+            target_title,
+            diff_files,
+            validation=validation,
+            source_info=validation.get("source_info"),
+        ):
+            continue
 
         cand.update({
             "deep_sim": validation["score"],
@@ -270,7 +343,18 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
         if len(results) >= max_report: break
     return results
 
-def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=5, pr_date=None, ignore_date=False, target_author=None):
+def check_diff(
+    diff_bytes,
+    pr_db,
+    commit_db,
+    config,
+    threshold=0.85,
+    max_report=5,
+    pr_date=None,
+    ignore_date=False,
+    target_author=None,
+    target_title=None,
+):
     diff_text = diff_bytes.decode("utf-8", errors="replace")
     if not diff_text.strip(): return False, []
 
@@ -288,8 +372,30 @@ def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=
         "files": compute_file_fingerprints(diff_files, config)
     }
 
-    pr_matches = find_matches(fingerprint, pr_db, threshold, max_report, "pr", config, effective_date, diff_files, ignore_date, target_author)
-    commit_matches = find_matches(fingerprint, commit_db, threshold, max_report, "commit", config, effective_date, diff_files, ignore_date)
+    pr_matches = find_matches(
+        fingerprint,
+        pr_db,
+        threshold,
+        max_report,
+        "pr",
+        config,
+        effective_date,
+        diff_files,
+        ignore_date,
+        target_author,
+        target_title,
+    )
+    commit_matches = find_matches(
+        fingerprint,
+        commit_db,
+        threshold,
+        max_report,
+        "commit",
+        config,
+        effective_date,
+        diff_files,
+        ignore_date,
+    )
 
     findings = []
     for m in pr_matches:
@@ -357,7 +463,18 @@ def main():
         try:
             diff_bytes, pr_info = fetch_pr_diff(t_owner, t_repo, a.pr_number, token)
             target_author = (pr_info.get("user") or {}).get("login")
-            found, findings = check_diff(diff_bytes, pr_db, commit_db, config, a.threshold, a.max_report, pr_info.get("created_at"), a.ignore_date, target_author)
+            found, findings = check_diff(
+                diff_bytes,
+                pr_db,
+                commit_db,
+                config,
+                a.threshold,
+                a.max_report,
+                pr_info.get("created_at"),
+                a.ignore_date,
+                target_author,
+                pr_info.get("title"),
+            )
             if found:
                 for msg, _ in findings: logger.info("    - %s", msg)
                 sys.exit(1)

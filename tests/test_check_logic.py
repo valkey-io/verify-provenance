@@ -117,6 +117,295 @@ class TestCheckLogic(unittest.TestCase):
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_same_author_deep_candidate(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 0.95,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+            "source_info": {"user": {"login": "alice"}},
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": target_diff},
+            target_author="alice",
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_metadata_only_legal_file(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"COPYING": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "COPYING",
+            [f"Copyright line {i} with license boilerplate text" for i in range(12)],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "COPYING", "source": "COPYING"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 0.95,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "COPYING", "source": "COPYING"}],
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"COPYING": target_diff},
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_generated_command_metadata_whole_fallback(self, mock_layer2, mock_layer1):
+        fingerprint = {
+            "simhash64": 1,
+            "files": {"src/commands/latency-latest.json": {"simhash64": 1}},
+            "patch_id": None,
+        }
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "src/commands/latency-latest.json",
+            [
+                "{",
+                '    "summary": "Return latest latency samples",',
+                '    "complexity": "O(N)",',
+                '    "arguments": [{"name": "event", "type": "string"}]',
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [
+                    {
+                        "target": "src/commands/latency-latest.json",
+                        "source": "src/commands/monitor.json",
+                    }
+                ],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "whole_simhash+deep",
+            "matched_files": [],
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/commands/latency-latest.json": target_diff},
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_release_aggregation_candidate(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/acl.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "src/acl.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1, "title": "Redis 7.2.7"},
+                "sim": 1.0,
+                "patch_id_match": True,
+                "signals": ["file_patch_id"],
+                "matched_files": [
+                    {
+                        "target": "src/acl.c",
+                        "source": "src/acl.c",
+                        "sim": 1.0,
+                        "same_path": True,
+                        "patch_id_match": True,
+                    }
+                ],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/acl.c": target_diff},
+            target_title="Valkey Patch Release 7.2.8",
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_low_signal_release_test_backport(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"tests/unit/pause.tcl": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "tests/unit/pause.tcl",
+            [
+                'test "pause case" {',
+                "    r multi",
+                "    r ping",
+                "    r exec",
+                "}",
+                'test "pause case two" {',
+                "    r multi",
+                "    r ping",
+                "    r exec",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "tests/unit/pause.tcl", "source": "tests/unit/pause.tcl"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "tests/unit/pause.tcl", "source": "tests/unit/pause.tcl"}],
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"tests/unit/pause.tcl": target_diff},
+            target_title="Fixes for Valkey 8.0.3",
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_keeps_regular_test_match(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"tests/unit/acl.tcl": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "tests/unit/acl.tcl",
+            [
+                "test {acl comments are ignored} {",
+                "    r acl setuser default on",
+                "    r acl load",
+                "    assert_match {*OK*} [r acl save]",
+                "    r acl setuser replica on",
+                "    r acl load",
+                "    assert_equal {user default on} [r acl list]",
+                "    r acl deluser replica",
+                "    assert_equal 1 [r acl load]",
+                "    assert_match {*default*} [r acl list]",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "tests/unit/acl.tcl", "source": "tests/unit/acl.tcl"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "tests/unit/acl.tcl", "source": "tests/unit/acl.tcl"}],
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"tests/unit/acl.tcl": target_diff},
+            target_title="Allow comments in ACL files",
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["method"], "file_simhash+deep")
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
     def test_find_matches_accepts_whole_patch_id_without_layer2(self, mock_layer2, mock_layer1):
         fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": "same"}
         db = {"prs": {"1": {"number": 1, "patch_id": "same", "files": {}}}}

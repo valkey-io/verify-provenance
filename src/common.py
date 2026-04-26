@@ -41,6 +41,25 @@ LAYER2_MIN_SHARED_TOKENS = 6
 LAYER2_MIN_TARGET_TRIGRAM_RATIO = 0.60
 LAYER2_MIN_SHARED_MEANINGFUL_TOKENS = 2
 FUZZY_CROSS_PATH_DATA_EXTENSIONS = {".json", ".yaml", ".yml"}
+LOW_SIGNAL_TEST_BACKPORT_MAX_TOKENS = 80
+LOW_SIGNAL_TEST_BACKPORT_MAX_LINES = 30
+LOW_SIGNAL_METADATA_MAX_TOKENS = 100
+LOW_SIGNAL_METADATA_MAX_LINES = 40
+TOP_LEVEL_LEGAL_METADATA_FILES = {
+    "copying",
+    "license",
+    "license.md",
+    "license.txt",
+    "notice",
+    "notice.md",
+    "notice.txt",
+}
+LOW_SIGNAL_REPOSITORY_METADATA_FILES = {
+    "codecov.yml",
+    "codecov.yaml",
+    "makefile",
+    "cmakelists.txt",
+}
 
 class ProvenanceConfig:
     """Configuration container for repository-specific src settings."""
@@ -446,6 +465,161 @@ def _is_generated_command_metadata(path):
         str(normalized).startswith("src/commands/")
         and normalized.suffix.lower() in FUZZY_CROSS_PATH_DATA_EXTENSIONS
     )
+
+
+def _normalize_login(login):
+    return login.lower() if isinstance(login, str) and login else None
+
+
+def author_login_from_info(info):
+    if not isinstance(info, dict):
+        return None
+    author = info.get("author_login") or info.get("author")
+    if isinstance(author, dict):
+        author = author.get("login")
+    if not author and isinstance(info.get("user"), dict):
+        author = info["user"].get("login")
+    return _normalize_login(author)
+
+
+def _title_from_info(info):
+    return info.get("title") if isinstance(info, dict) else None
+
+
+def _target_paths_from_evidence(candidate, validation, target_diff_files):
+    matches = []
+    if isinstance(validation, dict):
+        matches = validation.get("matched_files") or []
+    if not matches and isinstance(candidate, dict):
+        matches = candidate.get("matched_files") or []
+
+    paths = {m.get("target") for m in matches if m.get("target")}
+    if paths:
+        return paths
+    return set((target_diff_files or {}).keys())
+
+
+def _all_changed_paths_are_top_level_legal_metadata(target_diff_files):
+    paths = set((target_diff_files or {}).keys())
+    if not paths:
+        return False
+    for path in paths:
+        normalized = PurePosixPath(path)
+        if normalized.parent != PurePosixPath("."):
+            return False
+        if normalized.name.lower() not in TOP_LEVEL_LEGAL_METADATA_FILES:
+            return False
+    return True
+
+
+def _is_low_signal_repository_metadata_path(path):
+    if not path:
+        return False
+    normalized = str(PurePosixPath(path))
+    if normalized.startswith(".github/"):
+        return True
+    return PurePosixPath(path).name.lower() in LOW_SIGNAL_REPOSITORY_METADATA_FILES
+
+
+def _diff_stats_for_paths(paths, target_diff_files, config):
+    stats = []
+    for path in paths:
+        diff = (target_diff_files or {}).get(path, "")
+        stats.append({
+            "path": path,
+            "line_count": count_diff_lines(diff),
+            "token_count": len(normalize_diff(diff, config).split()),
+        })
+    return stats
+
+
+def _has_only_low_signal_repository_metadata(paths, target_diff_files, config):
+    if not paths or not all(_is_low_signal_repository_metadata_path(p) for p in paths):
+        return False
+    for stats in _diff_stats_for_paths(paths, target_diff_files, config):
+        if (
+            stats["line_count"] > LOW_SIGNAL_METADATA_MAX_LINES
+            or stats["token_count"] > LOW_SIGNAL_METADATA_MAX_TOKENS
+        ):
+            return False
+    return True
+
+
+def _looks_like_release_aggregation_title(title):
+    if not isinstance(title, str) or not title.strip():
+        return False
+    normalized = title.strip().lower()
+    if re.match(r"^(redis|valkey)\s+\d+\.\d+(\.\d+)?(\s|$)", normalized):
+        return True
+    if "patch release" in normalized or normalized.startswith("release/"):
+        return True
+    if "release" in normalized and ("merge" in normalized or "fixes" in normalized or "rc" in normalized):
+        return True
+    if re.match(r"^fixes for valkey \d+\.\d+", normalized):
+        return True
+    return False
+
+
+def _is_test_path(path):
+    return str(PurePosixPath(path)).startswith("tests/")
+
+
+def _is_low_signal_release_test_backport(paths, target_diff_files, config, target_title):
+    if not _looks_like_release_aggregation_title(target_title):
+        return False
+    if not paths or not all(_is_test_path(p) for p in paths):
+        return False
+    for stats in _diff_stats_for_paths(paths, target_diff_files, config):
+        if (
+            stats["line_count"] > LOW_SIGNAL_TEST_BACKPORT_MAX_LINES
+            or stats["token_count"] > LOW_SIGNAL_TEST_BACKPORT_MAX_TOKENS
+        ):
+            return False
+    return True
+
+
+def evaluate_false_positive_filter(
+    *,
+    candidate,
+    db_type,
+    method,
+    config,
+    target_author=None,
+    target_title=None,
+    target_diff_files=None,
+    source_info=None,
+    validation=None,
+):
+    """Central policy for suppressing candidates that are known false positives."""
+    entry = candidate.get("entry", {}) if isinstance(candidate, dict) else {}
+    source_info = source_info or {}
+    source_author = author_login_from_info(source_info) or author_login_from_info(entry)
+    target_author = _normalize_login(target_author)
+    if db_type == "pr" and target_author and source_author and target_author == source_author:
+        return {"filtered": True, "reason": "same_author_pr"}
+
+    if _all_changed_paths_are_top_level_legal_metadata(target_diff_files):
+        return {"filtered": True, "reason": "top_level_legal_metadata_only"}
+
+    paths = _target_paths_from_evidence(candidate, validation, target_diff_files)
+    if paths and all(_is_generated_command_metadata(path) for path in paths):
+        return {"filtered": True, "reason": "generated_command_metadata_only"}
+
+    source_title = _title_from_info(source_info) or _title_from_info(entry)
+    if (
+        db_type == "pr"
+        and _looks_like_release_aggregation_title(source_title)
+        and _looks_like_release_aggregation_title(target_title)
+    ):
+        return {"filtered": True, "reason": "release_aggregation_candidate"}
+
+    if _has_only_low_signal_repository_metadata(paths, target_diff_files, config):
+        return {"filtered": True, "reason": "low_signal_repository_metadata_only"}
+
+    if _is_low_signal_release_test_backport(paths, target_diff_files, config, target_title):
+        return {"filtered": True, "reason": "low_signal_release_test_backport"}
+
+    return {"filtered": False, "reason": None}
 
 
 def evaluate_diff_exemption(
