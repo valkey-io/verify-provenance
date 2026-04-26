@@ -462,6 +462,158 @@ class TestCheckLogic(unittest.TestCase):
         self.assertIsNone(result)
 
     @patch("check.fetch_pr_diff")
+    def test_layer2_rejects_string_heavy_cross_path_file_match(self, mock_fetch):
+        target = self.make_diff(
+            "src/commands/new.json",
+            [
+                "{",
+                '    "summary": "Copy a slot list",',
+                '    "complexity": "O(N)",',
+                '    "arguments": [{"name": "slot", "type": "integer"}]',
+                "}",
+            ],
+        )
+        source = self.make_diff(
+            "src/commands/old.json",
+            [
+                "{",
+                '    "summary": "Migrate a slot list",',
+                '    "complexity": "O(N)",',
+                '    "arguments": [{"name": "slot", "type": "integer"}]',
+                "}",
+            ],
+        )
+        mock_fetch.return_value = (source.encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/commands/new.json",
+                    "source": "src/commands/old.json",
+                    "sim": 0.90,
+                    "same_path": False,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/commands/new.json": target},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNone(result)
+
+    @patch("check.fetch_pr_diff")
+    def test_layer2_rejects_generated_command_metadata_file_match(self, mock_fetch):
+        target = self.make_diff(
+            "src/commands.def",
+            [
+                "#ifndef SKIP_CMD_HISTORY_TABLE",
+                "#define HGETDEL_History NULL",
+                "#endif",
+                "struct COMMAND_ARG HGETDEL_Args[] = {",
+                '    {MAKE_ARG("key", ARG_TYPE_KEY, 0, NULL, NULL, NULL, CMD_ARG_NONE, 0, NULL)},',
+                "};",
+            ],
+        )
+        source = self.make_diff(
+            "src/commands.def",
+            [
+                "#ifndef SKIP_CMD_HISTORY_TABLE",
+                "#define HGETDEL_History NULL",
+                "#endif",
+                "struct COMMAND_ARG HGETDEL_Args[] = {",
+                '    {MAKE_ARG("key", ARG_TYPE_KEY, 0, NULL, NULL, NULL, CMD_ARG_NONE, 0, NULL)},',
+                '    {MAKE_ARG("fields", ARG_TYPE_STRING, -1, NULL, NULL, NULL, CMD_ARG_MULTIPLE, 0, NULL)},',
+                "};",
+            ],
+        )
+        mock_fetch.return_value = (source.encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/commands.def",
+                    "source": "src/commands.def",
+                    "sim": 0.90,
+                    "same_path": True,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/commands.def": target},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNone(result)
+
+    @patch("check.fetch_pr_diff")
+    def test_layer2_falls_back_to_whole_diff_when_file_pair_is_exempt(self, mock_fetch):
+        target_tiny = self.make_diff("src/module.c", ["int moduleApiVersion = 1;"])
+        target_context = self.make_diff(
+            "src/other.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        source_tiny = self.make_diff("src/module.c", ["int moduleApiVersion = 1;"])
+        source_context = self.make_diff(
+            "src/other.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_fetch.return_value = ((source_tiny + "\n" + source_context).encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/module.c",
+                    "source": "src/module.c",
+                    "sim": 0.91,
+                    "same_path": True,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/module.c": target_tiny, "src/other.c": target_context},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["method"], "whole_simhash+deep")
+
+    @patch("check.fetch_pr_diff")
     def test_layer2_uses_whole_diff_fallback_without_file_evidence(self, mock_fetch):
         target = self.make_diff(
             "src/a.c",

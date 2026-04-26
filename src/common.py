@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -38,6 +39,8 @@ CODE_MOVEMENT_THRESHOLD = 0.70
 LAYER2_MIN_NORMALIZED_TOKENS = 8
 LAYER2_MIN_SHARED_TOKENS = 6
 LAYER2_MIN_TARGET_TRIGRAM_RATIO = 0.60
+LAYER2_MIN_SHARED_MEANINGFUL_TOKENS = 2
+FUZZY_CROSS_PATH_DATA_EXTENSIONS = {".json", ".yaml", ".yml"}
 
 class ProvenanceConfig:
     """Configuration container for repository-specific src settings."""
@@ -398,6 +401,16 @@ def _token_trigrams(tokens):
     return set(zip(tokens, tokens[1:], tokens[2:]))
 
 
+def _meaningful_tokens(tokens):
+    return {
+        token
+        for token in tokens
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", token)
+        and token not in PRESERVED_KEYWORDS
+        and token not in {"STR", "NUM"}
+    }
+
+
 def _single_diff_exemption(diff_text, config):
     normalized = normalize_diff(diff_text, config)
     token_count = len(normalized.split())
@@ -421,13 +434,54 @@ def _single_diff_exemption(diff_text, config):
     return {"exempt": False, "reason": None, "token_count": token_count, "line_count": line_count}
 
 
-def evaluate_diff_exemption(diff_text, config, source_diff=None, shared_tokens=None):
+def _path_suffix(path):
+    return PurePosixPath(path).suffix.lower() if path else ""
+
+
+def _is_generated_command_metadata(path):
+    if not path:
+        return False
+    normalized = PurePosixPath(path)
+    return str(normalized) == "src/commands.def" or (
+        str(normalized).startswith("src/commands/")
+        and normalized.suffix.lower() in FUZZY_CROSS_PATH_DATA_EXTENSIONS
+    )
+
+
+def evaluate_diff_exemption(
+    diff_text,
+    config,
+    source_diff=None,
+    shared_tokens=None,
+    require_meaningful_tokens=False,
+    target_path=None,
+    source_path=None,
+):
     target = _single_diff_exemption(diff_text, config)
     if target["exempt"]:
         return target
 
     if source_diff is None:
         return target
+
+    if (
+        require_meaningful_tokens
+        and target_path
+        and source_path
+        and _is_generated_command_metadata(target_path)
+        and _is_generated_command_metadata(source_path)
+    ):
+        return {"exempt": True, "reason": "deep_generated_command_metadata"}
+
+    if (
+        require_meaningful_tokens
+        and target_path
+        and source_path
+        and target_path != source_path
+        and _path_suffix(target_path) in FUZZY_CROSS_PATH_DATA_EXTENSIONS
+        and _path_suffix(source_path) == _path_suffix(target_path)
+    ):
+        return {"exempt": True, "reason": "deep_cross_path_data_file"}
 
     source = _single_diff_exemption(source_diff, config)
     if source["exempt"]:
@@ -439,6 +493,15 @@ def evaluate_diff_exemption(diff_text, config, source_diff=None, shared_tokens=N
         return {"exempt": True, "reason": "deep_too_few_tokens"}
     if shared_tokens is not None and shared_tokens < LAYER2_MIN_SHARED_TOKENS:
         return {"exempt": True, "reason": "deep_too_few_shared_tokens", "shared_tokens": shared_tokens}
+
+    if require_meaningful_tokens:
+        meaningful_overlap = _meaningful_tokens(target_tokens) & _meaningful_tokens(source_tokens)
+        if len(meaningful_overlap) < LAYER2_MIN_SHARED_MEANINGFUL_TOKENS:
+            return {
+                "exempt": True,
+                "reason": "deep_too_few_meaningful_tokens",
+                "shared_meaningful_tokens": len(meaningful_overlap),
+            }
 
     target_trigrams = _token_trigrams(target_tokens)
     source_trigrams = _token_trigrams(source_tokens)

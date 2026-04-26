@@ -153,7 +153,17 @@ def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_d
 
 def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None):
     score, shared_tokens, _ = deep_compare_diffs(target_diff, source_diff, config)
-    if evaluate_diff_exemption(target_diff, config, source_diff=source_diff, shared_tokens=shared_tokens)["exempt"]:
+    match = matched_files[0] if matched_files else {}
+    policy = evaluate_diff_exemption(
+        target_diff,
+        config,
+        source_diff=source_diff,
+        shared_tokens=shared_tokens,
+        require_meaningful_tokens=(method == "file_simhash+deep"),
+        target_path=match.get("target"),
+        source_path=match.get("source"),
+    )
+    if policy["exempt"]:
         return None
     return {
         "accepted": True,
@@ -189,7 +199,10 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
                 )
                 if result and (not best or result["score"] > best["score"]):
                     best = result
-            return best
+            if best:
+                return best
+            if len(valkey_diff_files) == 1 and len(source_diff_files) == 1:
+                return None
 
         valkey_combined = "\n".join(valkey_diff_files.values())
         return _deep_validation_result(valkey_combined, source_diff, config, "whole_simhash+deep")
