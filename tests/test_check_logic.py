@@ -10,13 +10,24 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from check import find_matches, layer1_find_candidates
+from check import find_matches, layer1_find_candidates, layer2_validate_candidate
 from common import ProvenanceConfig
 
 
 class TestCheckLogic(unittest.TestCase):
     def setUp(self):
         self.config = ProvenanceConfig(source_repo="redis/redis", target_repo="valkey-io/valkey")
+
+    def make_diff(self, path, added_lines):
+        return "\n".join(
+            [
+                f"diff --git a/{path} b/{path}",
+                f"--- a/{path}",
+                f"+++ b/{path}",
+                "@@ -0,0 +1,6 @@",
+                *[f"+{line}" for line in added_lines],
+            ]
+        )
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")
@@ -38,6 +49,259 @@ class TestCheckLogic(unittest.TestCase):
             diff_files={"src/a.c": "dummy"},
         )
         self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_rejects_fuzzy_candidate_when_deep_unavailable(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["whole_simhash"],
+                "matched_files": [],
+            }
+        ]
+        mock_layer2.return_value = None
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": "dummy"},
+        )
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_uses_structured_layer2_result(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.91,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 0.93,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": "dummy"},
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["method"], "file_simhash+deep")
+        self.assertEqual(results[0]["deep_sim"], 0.93)
+        self.assertEqual(results[0]["layer2"]["matched_files"][0]["source"], "src/old.c")
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_accepts_whole_patch_id_without_layer2(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": "same"}
+        db = {"prs": {"1": {"number": 1, "patch_id": "same", "files": {}}}}
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.0,
+                "patch_id_match": True,
+                "signals": ["patch_id"],
+                "matched_files": [],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": "dummy"},
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results[0]["method"], "patch_id")
+        self.assertEqual(results[0]["deep_sim"], 1.0)
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_accepts_file_patch_id_without_layer2(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "files": {}}}}
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.0,
+                "patch_id_match": True,
+                "signals": ["file_patch_id"],
+                "matched_files": [
+                    {
+                        "target": "src/a.c",
+                        "source": "src/old.c",
+                        "sim": 0.0,
+                        "same_path": False,
+                        "patch_id_match": True,
+                    }
+                ],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": "dummy"},
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results[0]["method"], "file_patch_id")
+        self.assertEqual(results[0]["deep_sim"], 1.0)
+
+    @patch("check.fetch_pr_diff")
+    def test_layer2_validates_matched_file_without_target_noise(self, mock_fetch):
+        target_bad = self.make_diff(
+            "src/bad.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    serverLog(LL_NOTICE, \"copied\");",
+                "    return total;",
+                "}",
+            ],
+        )
+        target_noise = self.make_diff(
+            "src/noise.c",
+            [f"int unrelated_{i}(void) {{ return {i}; }}" for i in range(40)],
+        )
+        source = self.make_diff(
+            "src/old.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    redisLog(LL_NOTICE, \"copied\");",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_fetch.return_value = (source.encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/bad.c",
+                    "source": "src/old.c",
+                    "sim": 0.91,
+                    "same_path": False,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/bad.c": target_bad, "src/noise.c": target_noise},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["method"], "file_simhash+deep")
+        self.assertGreaterEqual(result["score"], 0.90)
+        self.assertEqual(result["matched_files"][0]["target"], "src/bad.c")
+
+    @patch("check.fetch_pr_diff")
+    def test_layer2_rejects_tiny_generic_overlap(self, mock_fetch):
+        target = self.make_diff("src/bad.c", ["return NULL;"])
+        source = self.make_diff("src/old.c", ["return NULL;", "return NULL;", "return NULL;"])
+        mock_fetch.return_value = (source.encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/bad.c",
+                    "source": "src/old.c",
+                    "sim": 0.90,
+                    "same_path": False,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/bad.c": target},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNone(result)
+
+    @patch("check.fetch_pr_diff")
+    def test_layer2_uses_whole_diff_fallback_without_file_evidence(self, mock_fetch):
+        target = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_fetch.return_value = (target.encode("utf-8"), {"number": 42})
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["whole_simhash"],
+            "matched_files": [],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/a.c": target},
+            candidate,
+            "pr",
+            self.config,
+            token=None,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["method"], "whole_simhash+deep")
 
     def test_layer1_file_match_is_path_independent(self):
         fingerprint = {

@@ -109,6 +109,22 @@ def _candidate_sort_key(candidate):
     file_rank = 1 if candidate.get("matched_files") else 0
     return (patch_rank, file_rank, candidate.get("sim", 0.0))
 
+def _exact_match_method(candidate):
+    signals = candidate.get("signals", [])
+    if "patch_id" in signals:
+        return "patch_id"
+    if "file_patch_id" in signals:
+        return "file_patch_id"
+    return None
+
+def _layer1_method(candidate):
+    signals = candidate.get("signals", [])
+    if "file_simhash" in signals:
+        return "file_simhash"
+    if "whole_simhash" in signals:
+        return "whole_simhash"
+    return "simhash"
+
 def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_date=False):
     files = fingerprint.get("files", {})
     if not any(not is_infrastructure_file(f, config) for f in files):
@@ -123,6 +139,41 @@ def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_d
 
     return sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
 
+LAYER2_MIN_NORMALIZED_TOKENS = 8
+LAYER2_MIN_SHARED_TOKENS = 6
+LAYER2_MIN_TARGET_TRIGRAM_RATIO = 0.60
+
+def _token_trigrams(tokens):
+    if len(tokens) < 3:
+        return set()
+    return set(zip(tokens, tokens[1:], tokens[2:]))
+
+def _deep_evidence_sufficient(target_diff, source_diff, config, shared_tokens):
+    target_tokens = normalize_diff(target_diff, config).split()
+    source_tokens = normalize_diff(source_diff, config).split()
+    if min(len(target_tokens), len(source_tokens)) < LAYER2_MIN_NORMALIZED_TOKENS:
+        return False
+    if shared_tokens < LAYER2_MIN_SHARED_TOKENS:
+        return False
+
+    target_trigrams = _token_trigrams(target_tokens)
+    source_trigrams = _token_trigrams(source_tokens)
+    if not target_trigrams:
+        return False
+    shared_trigrams = target_trigrams & source_trigrams
+    return len(shared_trigrams) / len(target_trigrams) >= LAYER2_MIN_TARGET_TRIGRAM_RATIO
+
+def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None):
+    score, shared_tokens, _ = deep_compare_diffs(target_diff, source_diff, config)
+    if not _deep_evidence_sufficient(target_diff, source_diff, config, shared_tokens):
+        return None
+    return {
+        "accepted": True,
+        "score": score,
+        "method": method,
+        "matched_files": matched_files or [],
+    }
+
 def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token):
     try:
         owner, repo = config.source_repo.split("/")
@@ -132,8 +183,28 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
             source_diff_raw = fetch_commit_diff(owner, repo, candidate["entry"].get("sha"), token)
 
         source_diff = source_diff_raw.decode("utf-8", errors="replace")
+        matched_files = candidate.get("matched_files") or []
+        if matched_files:
+            source_diff_files = split_diff_by_file(source_diff)
+            best = None
+            for match in matched_files:
+                target_diff = valkey_diff_files.get(match["target"])
+                source_file_diff = source_diff_files.get(match["source"])
+                if not target_diff or not source_file_diff:
+                    continue
+                result = _deep_validation_result(
+                    target_diff,
+                    source_file_diff,
+                    config,
+                    "file_simhash+deep",
+                    [match],
+                )
+                if result and (not best or result["score"] > best["score"]):
+                    best = result
+            return best
+
         valkey_combined = "\n".join(valkey_diff_files.values())
-        return deep_compare_diffs(valkey_combined, source_diff, config)[0]
+        return _deep_validation_result(valkey_combined, source_diff, config, "whole_simhash+deep")
     except Exception as e:
         logger.debug("Layer 2 validation failed for %s: %s", candidate.get("key"), e)
         return None
@@ -145,15 +216,27 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
     token = os.environ.get("GITHUB_TOKEN")
     results = []
     for cand in candidates[:max_report * 2]:
+        exact_method = _exact_match_method(cand)
+        if exact_method:
+            cand.update({"method": exact_method, "deep_sim": 1.0})
+            results.append(cand)
+            if len(results) >= max_report: break
+            continue
+
         if not diff_files:
-            cand.update({"method": "simhash", "deep_sim": None})
+            cand.update({"method": _layer1_method(cand), "deep_sim": None})
             results.append(cand)
             continue
 
-        deep_sim = layer2_validate_candidate(diff_files, cand, db_type, config, token)
-        if (deep_sim is not None and deep_sim < threshold) or (deep_sim is None and cand["sim"] < threshold): continue
+        validation = layer2_validate_candidate(diff_files, cand, db_type, config, token)
+        if not validation or validation["score"] < threshold:
+            continue
 
-        cand.update({"deep_sim": deep_sim, "method": ("simhash+deep" if deep_sim is not None else "simhash")})
+        cand.update({
+            "deep_sim": validation["score"],
+            "method": validation["method"],
+            "layer2": validation,
+        })
         results.append(cand)
         if len(results) >= max_report: break
     return results
