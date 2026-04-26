@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""
+Tests for the GitHub Action metadata contract documented in README.md.
+"""
+
+import os
+import unittest
+
+
+ACTION_YML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "action.yml")
+
+
+def read_action_inputs():
+    inputs = {}
+    current = None
+    in_inputs = False
+
+    with open(ACTION_YML, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.rstrip("\n")
+            if line == "inputs:":
+                in_inputs = True
+                continue
+            if in_inputs and line and not line.startswith(" "):
+                break
+            if not in_inputs:
+                continue
+
+            if line.startswith("  ") and not line.startswith("    ") and line.strip().endswith(":"):
+                current = line.strip()[:-1]
+                inputs[current] = {}
+                continue
+
+            if current and line.startswith("    ") and ":" in line:
+                key, value = line.strip().split(":", 1)
+                inputs[current][key] = value.strip().strip('"').strip("'")
+
+    return inputs
+
+
+class TestActionMetadata(unittest.TestCase):
+    def test_action_exposes_pair_configuration_only(self):
+        inputs = read_action_inputs()
+
+        self.assertIn("branding_pairs", inputs)
+        self.assertIn("prefix_pairs", inputs)
+
+
+if __name__ == "__main__":
+    unittest.main()

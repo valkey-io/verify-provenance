@@ -72,10 +72,6 @@ jobs:
 | `target_repo` | Your repository (e.g., `valkey-io/valkey`) | **Required** |
 | `branding_pairs` | Comma-separated `Source:Target` brand pairs | - |
 | `prefix_pairs` | Comma-separated `Source:Target` prefix pairs | - |
-| `source_brand` | Legacy: Brand name in source repo | - |
-| `target_brand` | Legacy: Brand name in target repo | - |
-| `source_prefix` | Legacy: Prefix in source | - |
-| `target_prefix` | Legacy: Prefix in target | - |
 | `db_branch` | Orphan branch for databases | `verify-provenance-db` |
 | `pr_db_file` | Filename of PR database | `pr_fingerprints.json.gz` |
 | `commit_db_file` | Filename of commit database | `commits_bootstrap.json.gz` |
