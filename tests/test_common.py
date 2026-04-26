@@ -20,7 +20,7 @@ from common import (
     normalize_identifier,
     deep_compare_diffs,
     detect_code_movement,
-    evaluate_exemption_policy,
+    evaluate_diff_exemption,
     is_infrastructure_file,
     filter_branding_changes,
 )
@@ -126,13 +126,13 @@ class TestNormalization(unittest.TestCase):
         is_t, _, _, _ = detect_code_movement(diff)
         self.assertFalse(is_t)
 
-    def test_exemption_policy_rejects_tiny_helpers(self):
+    def test_diff_exemption_rejects_tiny_helpers(self):
         diff = "+return a < b ? a : b;"
-        policy = evaluate_exemption_policy(diff, self.config)
+        policy = evaluate_diff_exemption(diff, self.config)
         self.assertTrue(policy["exempt"])
         self.assertEqual(policy["reason"], "too_few_lines")
 
-    def test_exemption_policy_allows_substantial_changes(self):
+    def test_diff_exemption_allows_substantial_changes(self):
         diff = "\n".join(
             [
                 "+int copied(int input) {",
@@ -143,7 +143,7 @@ class TestNormalization(unittest.TestCase):
                 "+}",
             ]
         )
-        self.assertFalse(evaluate_exemption_policy(diff, self.config)["exempt"])
+        self.assertFalse(evaluate_diff_exemption(diff, self.config)["exempt"])
 
     def test_config_with_special_characters(self):
         """Ensure branding terms with regex meta-characters are handled safely."""

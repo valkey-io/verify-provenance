@@ -421,7 +421,7 @@ def _single_diff_exemption(diff_text, config):
     return {"exempt": False, "reason": None, "token_count": token_count, "line_count": line_count}
 
 
-def evaluate_exemption_policy(diff_text, config, source_diff=None, shared_tokens=None):
+def evaluate_diff_exemption(diff_text, config, source_diff=None, shared_tokens=None):
     target = _single_diff_exemption(diff_text, config)
     if target["exempt"]:
         return target

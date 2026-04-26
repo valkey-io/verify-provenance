@@ -141,7 +141,7 @@ def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_d
 
 def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None):
     score, shared_tokens, _ = deep_compare_diffs(target_diff, source_diff, config)
-    if evaluate_exemption_policy(target_diff, config, source_diff=source_diff, shared_tokens=shared_tokens)["exempt"]:
+    if evaluate_diff_exemption(target_diff, config, source_diff=source_diff, shared_tokens=shared_tokens)["exempt"]:
         return None
     return {
         "accepted": True,
@@ -185,20 +185,20 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
         logger.debug("Layer 2 validation failed for %s: %s", candidate.get("key"), e)
         return None
 
-def _exact_match_exempt(candidate, diff_files, config):
+def _should_skip_exact_candidate_for_exemption(candidate, diff_files, config):
     method = _exact_match_method(candidate)
     if not method or not diff_files:
         return False
 
     if method == "patch_id":
-        return evaluate_exemption_policy("\n".join(diff_files.values()), config)["exempt"]
+        return evaluate_diff_exemption("\n".join(diff_files.values()), config)["exempt"]
 
     target_diffs = [
         diff_files[match["target"]]
         for match in candidate.get("matched_files", [])
         if match.get("patch_id_match") and match.get("target") in diff_files
     ]
-    return bool(target_diffs) and all(evaluate_exemption_policy(diff, config)["exempt"] for diff in target_diffs)
+    return bool(target_diffs) and all(evaluate_diff_exemption(diff, config)["exempt"] for diff in target_diffs)
 
 def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=None, diff_files=None, ignore_date=False):
     candidates = layer1_find_candidates(fingerprint, db, db_type, config, date, ignore_date)
@@ -209,7 +209,7 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
     for cand in candidates[:max_report * 2]:
         exact_method = _exact_match_method(cand)
         if exact_method:
-            if _exact_match_exempt(cand, diff_files, config):
+            if _should_skip_exact_candidate_for_exemption(cand, diff_files, config):
                 continue
             cand.update({"method": exact_method, "deep_sim": 1.0})
             results.append(cand)
@@ -243,7 +243,7 @@ def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=
     effective_date = min(earliest_date, pr_date) if earliest_date and pr_date else (earliest_date or pr_date)
 
     diff_files = split_diff_by_file(diff_text)
-    if evaluate_exemption_policy(diff_text, config)["exempt"]: return False, []
+    if evaluate_diff_exemption(diff_text, config)["exempt"]: return False, []
 
     norm_all = normalize_diff(diff_text, config)
     fingerprint = {
