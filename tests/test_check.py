@@ -11,11 +11,15 @@ import tempfile
 import shutil
 import gzip
 import json
+from unittest.mock import patch
 
 # Resolve paths relative to the test file
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 PROV_DIR = os.path.dirname(TEST_DIR)
+SRC_DIR = os.path.join(PROV_DIR, "src")
 SCRIPT_PATH = os.path.join(PROV_DIR, "src", "check.py")
+sys.path.insert(0, SRC_DIR)
+import check as check_module
 
 class TestCheckCLI(unittest.TestCase):
     def setUp(self):
@@ -113,16 +117,24 @@ class TestCheckCLI(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
-    @unittest.skipIf(
-        not os.environ.get("GITHUB_TOKEN") or os.environ.get("RUN_LIVE_API_TESTS") != "1",
-        "Requires GITHUB_TOKEN and RUN_LIVE_API_TESTS=1",
-    )
-    def test_valid_pr_fetch_real_api(self):
-        result = subprocess.run(
-            self.common_args + ["3111"],
-            capture_output=True, text=True
+    @patch("check.fetch_pr_diff")
+    def test_valid_pr_fetch_uses_mocked_api(self, mock_fetch_pr_diff):
+        """Verify PR mode without hitting the real GitHub API."""
+        mock_fetch_pr_diff.return_value = (
+            b"diff --git a/src/a.c b/src/a.c\n--- a/src/a.c\n+++ b/src/a.c\n@@ -0,0 +1 @@\n+int unique(void) { return 1; }\n",
+            {
+                "created_at": "2026-01-01T00:00:00Z",
+                "title": "Mock PR",
+                "user": {"login": "alice"},
+            },
         )
-        self.assertEqual(result.returncode, 0)
+        argv = [SCRIPT_PATH] + self.common_args[2:] + ["3111"]
+        with patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as cm:
+                check_module.main()
+
+        self.assertEqual(cm.exception.code, 0)
+        mock_fetch_pr_diff.assert_called_once_with("valkey-io", "valkey", 3111, os.environ.get("GITHUB_TOKEN"))
 
     def test_help_message(self):
         result = subprocess.run(
