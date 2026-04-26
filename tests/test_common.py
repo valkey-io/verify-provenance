@@ -20,6 +20,7 @@ from common import (
     normalize_identifier,
     deep_compare_diffs,
     detect_code_movement,
+    evaluate_exemption_policy,
     is_infrastructure_file,
     filter_branding_changes,
 )
@@ -124,6 +125,25 @@ class TestNormalization(unittest.TestCase):
         diff = "-void f() { x=1; }\n+void f() { x=1; }\n+void g() { y=2; }\n+void h() { z=3; }\n+void i() { a=4; }\n+void j() { b=5; }\n+void k() { c=6; }"
         is_t, _, _, _ = detect_code_movement(diff)
         self.assertFalse(is_t)
+
+    def test_exemption_policy_rejects_tiny_helpers(self):
+        diff = "+return a < b ? a : b;"
+        policy = evaluate_exemption_policy(diff, self.config)
+        self.assertTrue(policy["exempt"])
+        self.assertEqual(policy["reason"], "too_few_lines")
+
+    def test_exemption_policy_allows_substantial_changes(self):
+        diff = "\n".join(
+            [
+                "+int copied(int input) {",
+                "+    int total = input + 1;",
+                "+    total += 2;",
+                "+    total += 3;",
+                "+    return total;",
+                "+}",
+            ]
+        )
+        self.assertFalse(evaluate_exemption_policy(diff, self.config)["exempt"])
 
     def test_config_with_special_characters(self):
         """Ensure branding terms with regex meta-characters are handled safely."""

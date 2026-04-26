@@ -35,6 +35,9 @@ MIN_TOKENS = 5
 MIN_LINES = 5
 MIN_NET_NEW_LINES = 5
 CODE_MOVEMENT_THRESHOLD = 0.70
+LAYER2_MIN_NORMALIZED_TOKENS = 8
+LAYER2_MIN_SHARED_TOKENS = 6
+LAYER2_MIN_TARGET_TRIGRAM_RATIO = 0.60
 
 class ProvenanceConfig:
     """Configuration container for repository-specific src settings."""
@@ -387,6 +390,73 @@ def count_diff_lines(diff_text):
         if (line.startswith("+") and not line.startswith("+++")) or (line.startswith("-") and not line.startswith("---")):
             count += 1
     return count
+
+
+def _token_trigrams(tokens):
+    if len(tokens) < 3:
+        return set()
+    return set(zip(tokens, tokens[1:], tokens[2:]))
+
+
+def _single_diff_exemption(diff_text, config):
+    normalized = normalize_diff(diff_text, config)
+    token_count = len(normalized.split())
+    if token_count < MIN_TOKENS:
+        return {"exempt": True, "reason": "too_few_tokens", "token_count": token_count}
+
+    line_count = count_diff_lines(diff_text)
+    if line_count < MIN_LINES:
+        return {"exempt": True, "reason": "too_few_lines", "line_count": line_count}
+
+    is_trivial, movement_ratio, net_new, stats = detect_code_movement(diff_text)
+    if is_trivial:
+        reason = "too_few_net_new_lines" if net_new < MIN_NET_NEW_LINES else "code_movement"
+        return {
+            "exempt": True,
+            "reason": reason,
+            "movement_ratio": movement_ratio,
+            "net_new_lines": net_new,
+            "stats": stats,
+        }
+    return {"exempt": False, "reason": None, "token_count": token_count, "line_count": line_count}
+
+
+def evaluate_exemption_policy(diff_text, config, source_diff=None, shared_tokens=None):
+    target = _single_diff_exemption(diff_text, config)
+    if target["exempt"]:
+        return target
+
+    if source_diff is None:
+        return target
+
+    source = _single_diff_exemption(source_diff, config)
+    if source["exempt"]:
+        return {"exempt": True, "reason": f"source_{source['reason']}", "source": source}
+
+    target_tokens = normalize_diff(diff_text, config).split()
+    source_tokens = normalize_diff(source_diff, config).split()
+    if min(len(target_tokens), len(source_tokens)) < LAYER2_MIN_NORMALIZED_TOKENS:
+        return {"exempt": True, "reason": "deep_too_few_tokens"}
+    if shared_tokens is not None and shared_tokens < LAYER2_MIN_SHARED_TOKENS:
+        return {"exempt": True, "reason": "deep_too_few_shared_tokens", "shared_tokens": shared_tokens}
+
+    target_trigrams = _token_trigrams(target_tokens)
+    source_trigrams = _token_trigrams(source_tokens)
+    if not target_trigrams:
+        return {"exempt": True, "reason": "deep_too_few_trigrams"}
+    shared_trigrams = target_trigrams & source_trigrams
+    trigram_ratio = len(shared_trigrams) / len(target_trigrams)
+    if trigram_ratio < LAYER2_MIN_TARGET_TRIGRAM_RATIO:
+        return {"exempt": True, "reason": "deep_too_few_shared_trigrams", "trigram_ratio": trigram_ratio}
+
+    return {
+        "exempt": False,
+        "reason": None,
+        "target": target,
+        "source": source,
+        "trigram_ratio": trigram_ratio,
+        "shared_tokens": shared_tokens,
+    }
 
 
 def normalize_branding_terms(text, config):
