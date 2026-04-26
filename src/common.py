@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 # Provenance checking constants - 2-Layer Approach
 LAYER1_SIMHASH_BASE_THRESHOLD = 0.80
-LAYER1_SIMHASH_WITH_PATCHID = 0.70
 LAYER2_SIMILARITY_THRESHOLD = 0.85
 
 # Pre-filters (applied before Layer 1)

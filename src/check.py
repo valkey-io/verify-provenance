@@ -11,53 +11,117 @@ def get_earliest_commit_date(diff_text):
         return min(parsed).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     except: return None
 
+def _db_items(db, db_type):
+    return db.get("prs", {}) if db_type == "pr" else db.get("commits", {})
+
+def _entry_timestamp(entry, db_type):
+    return entry.get("created_at") if db_type == "pr" else entry.get("date")
+
+def _entry_allowed_by_date(entry, db_type, target_ts):
+    if not target_ts:
+        return True
+    entry_ts = normalize_timestamp(_entry_timestamp(entry, db_type))
+    return not entry_ts or entry_ts <= target_ts
+
+def _ensure_candidate(candidates, key, entry):
+    if key not in candidates:
+        candidates[key] = {
+            "key": key,
+            "entry": entry,
+            "sim": 0.0,
+            "patch_id_match": False,
+            "matched_files": [],
+            "signals": [],
+        }
+    return candidates[key]
+
+def _add_signal(candidate, signal, sim=None, patch_id_match=False):
+    if signal not in candidate["signals"]:
+        candidate["signals"].append(signal)
+    if sim is not None:
+        candidate["sim"] = max(candidate["sim"], sim)
+    candidate["patch_id_match"] |= patch_id_match
+
+def _add_matched_file(candidate, target_path, source_path, sim, patch_id_match):
+    for match in candidate["matched_files"]:
+        if match["target"] == target_path and match["source"] == source_path:
+            match["sim"] = max(match["sim"], sim)
+            match["patch_id_match"] |= patch_id_match
+            return
+    candidate["matched_files"].append({
+        "target": target_path,
+        "source": source_path,
+        "sim": sim,
+        "same_path": target_path == source_path,
+        "patch_id_match": patch_id_match,
+    })
+
+def _add_patch_id_candidates(candidates, fingerprint, db, db_type, target_ts):
+    patch_id = fingerprint.get("patch_id")
+    if not patch_id:
+        return
+    for key, entry in _db_items(db, db_type).items():
+        if not _entry_allowed_by_date(entry, db_type, target_ts):
+            continue
+        if patch_id and entry.get("patch_id") and patch_id == entry.get("patch_id"):
+            candidate = _ensure_candidate(candidates, key, entry)
+            _add_signal(candidate, "patch_id", patch_id_match=True)
+
+def _add_whole_simhash_candidates(candidates, fingerprint, db, db_type, target_ts):
+    target_simhash = fingerprint.get("simhash64", 0)
+    for key, entry in _db_items(db, db_type).items():
+        if not _entry_allowed_by_date(entry, db_type, target_ts):
+            continue
+        sim = compute_simhash_similarity(target_simhash, entry.get("simhash64", 0))
+        if sim >= LAYER1_SIMHASH_BASE_THRESHOLD:
+            candidate = _ensure_candidate(candidates, key, entry)
+            _add_signal(candidate, "whole_simhash", sim=sim)
+
+def _add_file_pair_candidates(candidates, fingerprint, db, db_type, config, target_ts):
+    files = fingerprint.get("files", {})
+    for key, entry in _db_items(db, db_type).items():
+        if not _entry_allowed_by_date(entry, db_type, target_ts):
+            continue
+        for target_path, target_fp in files.items():
+            if is_infrastructure_file(target_path, config):
+                continue
+            for source_path, source_fp in entry.get("files", {}).items():
+                if is_infrastructure_file(source_path, config):
+                    continue
+                sim = compute_simhash_similarity(target_fp.get("simhash64", 0), source_fp.get("simhash64", 0))
+                patch_id_match = bool(
+                    target_fp.get("patch_id")
+                    and source_fp.get("patch_id")
+                    and target_fp["patch_id"] == source_fp["patch_id"]
+                )
+                if not patch_id_match and sim < LAYER1_SIMHASH_BASE_THRESHOLD:
+                    continue
+
+                candidate = _ensure_candidate(candidates, key, entry)
+                if patch_id_match:
+                    _add_signal(candidate, "file_patch_id", sim=sim, patch_id_match=True)
+                if sim >= LAYER1_SIMHASH_BASE_THRESHOLD:
+                    _add_signal(candidate, "file_simhash", sim=sim)
+                _add_matched_file(candidate, target_path, source_path, sim, patch_id_match)
+
+def _candidate_sort_key(candidate):
+    patch_rank = 1 if candidate.get("patch_id_match") else 0
+    file_rank = 1 if candidate.get("matched_files") else 0
+    return (patch_rank, file_rank, candidate.get("sim", 0.0))
+
 def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_date=False):
-    candidates = []
     files = fingerprint.get("files", {})
     if not any(not is_infrastructure_file(f, config) for f in files):
         return []
 
     target_ts = normalize_timestamp(date) if date and not ignore_date else None
-    patch_id = fingerprint.get("patch_id")
+    candidates = {}
 
-    items = db.get("prs", {}) if db_type == "pr" else db.get("commits", {})
-    for key, entry in items.items():
-        if target_ts:
-            entry_ts = normalize_timestamp(entry.get("created_at") if db_type == "pr" else entry.get("date"))
-            if entry_ts and entry_ts > target_ts:
-                continue
+    _add_patch_id_candidates(candidates, fingerprint, db, db_type, target_ts)
+    _add_whole_simhash_candidates(candidates, fingerprint, db, db_type, target_ts)
+    _add_file_pair_candidates(candidates, fingerprint, db, db_type, config, target_ts)
 
-        ref_files = entry.get("files", {})
-        ref_patch_id = entry.get("patch_id")
-        api_id_match = bool(patch_id and ref_patch_id and patch_id == ref_patch_id)
-
-        if not ref_files:
-            sim = compute_simhash_similarity(fingerprint["simhash64"], entry.get("simhash64", 0))
-            if sim >= LAYER1_SIMHASH_BASE_THRESHOLD or (sim >= LAYER1_SIMHASH_WITH_PATCHID and api_id_match):
-                candidates.append({"key": key, "entry": entry, "sim": sim, "patch_id_match": api_id_match, "matched_files": []})
-            continue
-
-        best_sim = 0.0
-        matched_files = []
-        any_patch_id_match = api_id_match
-
-        for v_fn, v_fp in files.items():
-            if v_fn in ref_files:
-                s = compute_simhash_similarity(v_fp.get("simhash64", 0), ref_files[v_fn].get("simhash64", 0))
-                fp_id_match = bool(v_fp.get("patch_id") and ref_files[v_fn].get("patch_id") and v_fp["patch_id"] == ref_files[v_fn]["patch_id"])
-                if s >= LAYER1_SIMHASH_BASE_THRESHOLD or (s >= LAYER1_SIMHASH_WITH_PATCHID and fp_id_match):
-                    matched_files.append((v_fn, s, fp_id_match))
-                    best_sim = max(best_sim, s)
-                    any_patch_id_match |= fp_id_match
-
-        overall_sim = compute_simhash_similarity(fingerprint["simhash64"], entry.get("simhash64", 0))
-        best_sim = max(best_sim, overall_sim)
-
-        if best_sim >= LAYER1_SIMHASH_BASE_THRESHOLD or (best_sim >= LAYER1_SIMHASH_WITH_PATCHID and any_patch_id_match) or matched_files:
-            candidates.append({"key": key, "entry": entry, "sim": best_sim, "patch_id_match": any_patch_id_match, "matched_files": matched_files})
-
-    candidates.sort(key=lambda x: x["sim"], reverse=True)
-    return candidates
+    return sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
 
 def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token):
     try:
