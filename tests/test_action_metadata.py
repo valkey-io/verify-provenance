@@ -45,6 +45,13 @@ class TestActionMetadata(unittest.TestCase):
         self.assertIn("branding_pairs", inputs)
         self.assertIn("prefix_pairs", inputs)
 
+    def test_check_step_captures_exit_code_before_failing(self):
+        with open(ACTION_YML, encoding="utf-8") as f:
+            action = f.read()
+
+        self.assertIn("set +e\n          python3 ${{ github.action_path }}/src/check.py", action)
+        self.assertIn("EXIT_CODE=$?\n          set -e", action)
+
 
 if __name__ == "__main__":
     unittest.main()

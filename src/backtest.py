@@ -11,6 +11,39 @@ import sys
 import logging
 from common import logger
 
+VALKEY_REGRESSION_POSITIVES = {3080, 3085, 3088, 3095, 3102}
+
+
+def parse_expected_positives(raw):
+    if not raw or not raw.strip():
+        return set()
+    return {int(part.strip()) for part in raw.split(",") if part.strip()}
+
+
+def default_expected_positives(args):
+    if args.target_repo != "valkey-io/valkey":
+        return set()
+    return {pr for pr in VALKEY_REGRESSION_POSITIVES if args.start <= pr <= args.end}
+
+
+def validate_backtest_results(failed, errors, expected_positives):
+    problems = []
+    if errors:
+        problems.append(f"Backtest had {len(errors)} errors/timeouts")
+
+    if expected_positives:
+        actual_positives = {pr_num for pr_num, _ in failed}
+        missing = sorted(expected_positives - actual_positives)
+        unexpected = sorted(actual_positives - expected_positives)
+
+        if missing:
+            problems.append("Missing expected flagged PRs: " + ", ".join(str(pr) for pr in missing))
+        if unexpected:
+            problems.append("Unexpected flagged PRs: " + ", ".join(str(pr) for pr in unexpected))
+
+    return not problems, problems
+
+
 def check_pr(pr_number, common_args):
     """Run provenance check on a single PR."""
     try:
@@ -60,6 +93,7 @@ def main():
     parser.add_argument("--prefix-pairs")
     parser.add_argument("--pr-db", required=True)
     parser.add_argument("--commit-db", required=True)
+    parser.add_argument("--expected-positives", help="Comma-separated PR numbers expected to be flagged")
     parser.add_argument("--verbose", action="store_true")
 
     args, extra = parser.parse_known_args()
@@ -86,7 +120,15 @@ def main():
     if args.prefix_pairs: common_args.extend(["--prefix-pairs", args.prefix_pairs])
     if args.verbose: common_args.append("--verbose")
 
+    expected_positives = (
+        parse_expected_positives(args.expected_positives)
+        if args.expected_positives is not None
+        else default_expected_positives(args)
+    )
+
     logger.info(f"Backtesting PRs {args.start} to {args.end}")
+    if expected_positives:
+        logger.info("Expected flagged PRs: %s", ", ".join(str(pr) for pr in sorted(expected_positives)))
     logger.info("=" * 80)
 
     failed = []
@@ -102,7 +144,7 @@ def main():
         if status == "FAIL":
             failed.append((pr_num, detail))
             logger.info(f"  ✗ PR #{pr_num}: FLAGGED - {detail}")
-        elif status == "ERROR":
+        elif status in ("ERROR", "TIMEOUT"):
             errors.append((pr_num, detail))
             logger.info(f"  ⚠ PR #{pr_num}: ERROR - {detail}")
 
@@ -116,6 +158,13 @@ def main():
         logger.info("\nFlagged PRs:")
         for pr_num, detail in failed:
             logger.info(f"  - PR #{pr_num}: {detail}")
+
+    ok, problems = validate_backtest_results(failed, errors, expected_positives)
+    if not ok:
+        logger.info("\nBacktest validation failures:")
+        for problem in problems:
+            logger.info(f"  - {problem}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

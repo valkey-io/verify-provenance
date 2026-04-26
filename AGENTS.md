@@ -66,8 +66,8 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
 ### Databases
 - `tests/redis_commits_bootstrap.json.gz`: Fingerprints of Redis commits.
 - `tests/redis_pr_fingerprints.json.gz`: Fingerprints of Redis PRs.
-- These are stored in compressed JSON format and should be handled with `gzip` and `json` modules.
-- **IMPORTANT**: Database fingerprint files (`.json.gz`) should **NOT** be added to the `verify-provenance` repository. They belong to the target repositories being monitored and are typically stored in an orphaned branch (e.g., `verify-provenance-db`) of those repositories.
+- These tracked files are test fixtures only. They are stored in compressed JSON format and should be handled with `gzip` and `json` modules.
+- **IMPORTANT**: Production database fingerprint files (`.json.gz`) should **NOT** be added to the `verify-provenance` repository. They belong to the target repositories being monitored and are typically stored in an orphaned branch (e.g., `verify-provenance-db`) of those repositories.
 
 ### Scripts
 - `scripts/bootstrap.sh`: Simplifies the initial setup of the action for a new repository.
@@ -77,7 +77,7 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
 - **Commit Signatures**: All git commits must be signed using the `Signed-off-by` line. The agent must verify that the git global configuration for `user.name` and `user.email` are set. If they are missing, the agent should guide the user to configure them before attempting to commit.
 - **Commit Messages**:
   - **Title**: Use a short, descriptive phrase with meaningful semantics. Avoid using prefixes like "fix:" or "feat:". Do not reference project phases.
-  - **Body**: For non-trivial changes, use a brief bulleted list (maximum 5 points) to capture major changes and their rationale.
+  - **Body**: For non-trivial changes, use a brief bulleted list (maximum 5 points) to capture major changes and their rationale. Prefer concise bullets like: `- Clarify test fixture database policy.`, `- Capture action check failures before posting PR results.`
   - **Content**: Focus on actual logic/architectural changes. Do not include trivial details such as the number of lines changed or the fact that tests passed.
 - **Commit Workflow**:
   - Always commit changes locally once both unit tests and regression tests have passed.
@@ -123,4 +123,4 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
 - **Logging**: Use the `logger` from `common.py`. Verbose mode (`--verbose`) enables DEBUG level.
 
 ## Style Guidance
-- **Trailing Spaces**: Never have any trailing spaces in any files. Ensure all text and code files are trimmed before committing.
+- **Trailing Spaces**: Never have any trailing spaces in any files. Ensure all text and code files are trimmed before committing, and run `git diff --check` before finalizing changes.
