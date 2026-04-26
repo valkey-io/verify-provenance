@@ -185,20 +185,29 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
         logger.debug("Layer 2 validation failed for %s: %s", candidate.get("key"), e)
         return None
 
-def _should_skip_exact_candidate_for_exemption(candidate, diff_files, config):
-    method = _exact_match_method(candidate)
-    if not method or not diff_files:
-        return False
+def _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
+    if not diff_files:
+        return True
 
     if method == "patch_id":
-        return evaluate_diff_exemption("\n".join(diff_files.values()), config)["exempt"]
+        return not evaluate_diff_exemption("\n".join(diff_files.values()), config)["exempt"]
 
     target_diffs = [
         diff_files[match["target"]]
         for match in candidate.get("matched_files", [])
         if match.get("patch_id_match") and match.get("target") in diff_files
     ]
-    return bool(target_diffs) and all(evaluate_diff_exemption(diff, config)["exempt"] for diff in target_diffs)
+    if not target_diffs:
+        return True
+    return any(not evaluate_diff_exemption(diff, config)["exempt"] for diff in target_diffs)
+
+def _resolve_exact_candidate(candidate, diff_files, config):
+    method = _exact_match_method(candidate)
+    if not method:
+        return None
+    if not _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
+        return {"accepted": False}
+    return {"accepted": True, "method": method, "deep_sim": 1.0}
 
 def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=None, diff_files=None, ignore_date=False):
     candidates = layer1_find_candidates(fingerprint, db, db_type, config, date, ignore_date)
@@ -207,11 +216,11 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
     token = os.environ.get("GITHUB_TOKEN")
     results = []
     for cand in candidates[:max_report * 2]:
-        exact_method = _exact_match_method(cand)
-        if exact_method:
-            if _should_skip_exact_candidate_for_exemption(cand, diff_files, config):
+        exact = _resolve_exact_candidate(cand, diff_files, config)
+        if exact:
+            if not exact["accepted"]:
                 continue
-            cand.update({"method": exact_method, "deep_sim": 1.0})
+            cand.update({"method": exact["method"], "deep_sim": exact["deep_sim"]})
             results.append(cand)
             if len(results) >= max_report: break
             continue
