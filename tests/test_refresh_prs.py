@@ -5,15 +5,18 @@ test_refresh_prs.py - Unit tests for refresh_prs.py
 
 import unittest
 from unittest.mock import patch, MagicMock
+import gzip
 import json
 import io
 import os
 import sys
+import tempfile
 
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from refresh_prs import fetch_pr_list, refresh_prs, should_skip_pr
+from common import ProvenanceConfig
 
 class TestRefreshPrs(unittest.TestCase):
     @patch("refresh_prs.github_request")
@@ -41,6 +44,51 @@ class TestRefreshPrs(unittest.TestCase):
         config = MagicMock()
         refresh_prs(args, config)
         self.assertTrue(mock_gzip.called)
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"})
+    @patch("refresh_prs.fetch_pr_list")
+    @patch("refresh_prs.fetch_pr_diff")
+    def test_refresh_prs_records_author_login(self, mock_fetch_diff, mock_fetch_list):
+        """PR fingerprints should preserve source author login for policy checks."""
+        pr = {
+            "number": 1,
+            "state": "closed",
+            "title": "Fix copied logic",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "changed_files": 1,
+            "user": {"login": "alice"},
+        }
+        mock_fetch_list.side_effect = [([pr], True), ([], True)]
+        mock_fetch_diff.return_value = (
+            "\n".join(
+                [
+                    "diff --git a/src/a.c b/src/a.c",
+                    "--- a/src/a.c",
+                    "+++ b/src/a.c",
+                    "@@ -0,0 +1,6 @@",
+                    "+int f(int input) {",
+                    "+    int total = input + 1;",
+                    "+    total += 2;",
+                    "+    return total;",
+                    "+}",
+                ]
+            ).encode("utf-8"),
+            {},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args = MagicMock()
+            args.source_owner = "redis"
+            args.source_repo_name = "redis"
+            args.cutoff_date = "2024-01-01T00:00:00Z"
+            args.out_db = os.path.join(tmp_dir, "prs.json.gz")
+
+            refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+
+            with gzip.open(args.out_db, "rt", encoding="utf-8") as f:
+                data = json.load(f)
+        self.assertEqual(data["prs"]["1"]["author_login"], "alice")
 
     def test_should_skip_pr_cases(self):
         """Test the logic for skipping non-feature PRs based on title or size."""

@@ -158,6 +158,88 @@ class TestCheckLogic(unittest.TestCase):
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")
+    def test_find_matches_skips_same_author_patch_id(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": "same"}
+        db = {"prs": {"1": {"number": 1, "patch_id": "same", "files": {}}}}
+        target_diff = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1, "author_login": "alice"},
+                "sim": 0.0,
+                "patch_id_match": True,
+                "signals": ["patch_id"],
+                "matched_files": [],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": target_diff},
+            target_author="alice",
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_accepts_different_author_patch_id(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": "same"}
+        db = {"prs": {"1": {"number": 1, "patch_id": "same", "files": {}}}}
+        target_diff = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1, "author_login": "alice"},
+                "sim": 0.0,
+                "patch_id_match": True,
+                "signals": ["patch_id"],
+                "matched_files": [],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": target_diff},
+            target_author="bob",
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results[0]["method"], "patch_id")
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
     def test_find_matches_accepts_file_patch_id_without_layer2(self, mock_layer2, mock_layer1):
         fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
         db = {"prs": {"1": {"number": 1, "files": {}}}}
@@ -204,6 +286,55 @@ class TestCheckLogic(unittest.TestCase):
         mock_layer2.assert_not_called()
         self.assertEqual(results[0]["method"], "file_patch_id")
         self.assertEqual(results[0]["deep_sim"], 1.0)
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_skips_same_author_file_patch_id(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "files": {}}}}
+        target_diff = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1, "author_login": "alice"},
+                "sim": 0.0,
+                "patch_id_match": True,
+                "signals": ["file_patch_id"],
+                "matched_files": [
+                    {
+                        "target": "src/a.c",
+                        "source": "src/old.c",
+                        "sim": 0.0,
+                        "same_path": False,
+                        "patch_id_match": True,
+                    }
+                ],
+            }
+        ]
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": target_diff},
+            target_author="alice",
+        )
+
+        mock_layer2.assert_not_called()
+        self.assertEqual(results, [])
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")

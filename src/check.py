@@ -125,6 +125,18 @@ def _layer1_method(candidate):
         return "whole_simhash"
     return "simhash"
 
+def _author_login(entry):
+    author = entry.get("author_login") or entry.get("author")
+    if isinstance(author, dict):
+        author = author.get("login")
+    return author.lower() if isinstance(author, str) else None
+
+def _same_author_pr_candidate(candidate, db_type, target_author):
+    if db_type != "pr" or not target_author:
+        return False
+    source_author = _author_login(candidate.get("entry", {}))
+    return bool(source_author and source_author == target_author.lower())
+
 def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_date=False):
     files = fingerprint.get("files", {})
     if not any(not is_infrastructure_file(f, config) for f in files):
@@ -201,22 +213,24 @@ def _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
         return True
     return any(not evaluate_diff_exemption(diff, config)["exempt"] for diff in target_diffs)
 
-def _resolve_exact_candidate(candidate, diff_files, config):
+def _resolve_exact_candidate(candidate, db_type, target_author, diff_files, config):
     method = _exact_match_method(candidate)
     if not method:
         return None
+    if _same_author_pr_candidate(candidate, db_type, target_author):
+        return {"accepted": False, "reason": "same_author"}
     if not _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
-        return {"accepted": False}
+        return {"accepted": False, "reason": "diff_exempt"}
     return {"accepted": True, "method": method, "deep_sim": 1.0}
 
-def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=None, diff_files=None, ignore_date=False):
+def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=None, diff_files=None, ignore_date=False, target_author=None):
     candidates = layer1_find_candidates(fingerprint, db, db_type, config, date, ignore_date)
     if not candidates: return []
 
     token = os.environ.get("GITHUB_TOKEN")
     results = []
     for cand in candidates[:max_report * 2]:
-        exact = _resolve_exact_candidate(cand, diff_files, config)
+        exact = _resolve_exact_candidate(cand, db_type, target_author, diff_files, config)
         if exact:
             if not exact["accepted"]:
                 continue
@@ -243,7 +257,7 @@ def find_matches(fingerprint, db, threshold, max_report, db_type, config, date=N
         if len(results) >= max_report: break
     return results
 
-def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=5, pr_date=None, ignore_date=False):
+def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=5, pr_date=None, ignore_date=False, target_author=None):
     diff_text = diff_bytes.decode("utf-8", errors="replace")
     if not diff_text.strip(): return False, []
 
@@ -261,7 +275,7 @@ def check_diff(diff_bytes, pr_db, commit_db, config, threshold=0.85, max_report=
         "files": compute_file_fingerprints(diff_files, config)
     }
 
-    pr_matches = find_matches(fingerprint, pr_db, threshold, max_report, "pr", config, effective_date, diff_files, ignore_date)
+    pr_matches = find_matches(fingerprint, pr_db, threshold, max_report, "pr", config, effective_date, diff_files, ignore_date, target_author)
     commit_matches = find_matches(fingerprint, commit_db, threshold, max_report, "commit", config, effective_date, diff_files, ignore_date)
 
     findings = []
@@ -329,7 +343,8 @@ def main():
     if a.pr_number:
         try:
             diff_bytes, pr_info = fetch_pr_diff(t_owner, t_repo, a.pr_number, token)
-            found, findings = check_diff(diff_bytes, pr_db, commit_db, config, a.threshold, a.max_report, pr_info.get("created_at"), a.ignore_date)
+            target_author = (pr_info.get("user") or {}).get("login")
+            found, findings = check_diff(diff_bytes, pr_db, commit_db, config, a.threshold, a.max_report, pr_info.get("created_at"), a.ignore_date, target_author)
             if found:
                 for msg, _ in findings: logger.info("    - %s", msg)
                 sys.exit(1)

@@ -68,6 +68,7 @@ def refresh_prs(args, config):
                     diff_text = diff_bytes.decode("utf-8")
                     prs[str(pr_num)] = {
                         "number": pr_num, "state": pr["state"], "created_at": pr["created_at"], "updated_at": pr["updated_at"],
+                        "author_login": (pr.get("user") or {}).get("login"),
                         "simhash64": simhash64(normalize_diff(diff_text, config)), "patch_id": compute_patch_id(diff_text),
                         "files": compute_file_fingerprints(split_diff_by_file(diff_text), config)
                     }
