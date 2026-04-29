@@ -540,6 +540,207 @@ class TestCheckLogic(unittest.TestCase):
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")
+    def test_find_matches_filters_low_scope_isolated_single_file_match(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/t_set.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_t_set = self.make_diff(
+            "src/t_set.c",
+            [
+                "if (p != NULL) {",
+                "    if (str == tmpbuf) {",
+                "        p = lpFindInteger(lp, p, llval, 0);",
+                "    } else {",
+                "        p = lpFind(lp, p, (unsigned char *)str, len, 0);",
+                "    }",
+                "}",
+            ],
+        )
+        target_listpack = self.make_diff(
+            "src/listpack.c",
+            [
+                "unsigned char *lpFindInteger(unsigned char *lp, unsigned char *p, int64_t value, int skip) {",
+                "    return lpFindIntegerWithEncoding(lp, p, value, skip);",
+                "}",
+                "void lpLocalImplementation(void) {",
+                "    updateLocalSearchCache();",
+                "}",
+            ],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 1.0,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/t_set.c", "source": "src/t_set.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/t_set.c", "source": "src/t_set.c"}],
+            "evidence": {
+                "matched_file": {
+                    "target": "src/t_set.c",
+                    "source": "src/t_set.c",
+                    "target_stats": {"line_count": 14, "token_count": 87},
+                    "source_stats": {"line_count": 80, "token_count": 416},
+                    "patch_id_match": False,
+                },
+                "peer_file_scores": [
+                    {
+                        "target": "src/listpack.c",
+                        "source": "src/listpack.c",
+                        "score": 0.39,
+                        "target_tokens": 228,
+                        "source_tokens": 356,
+                    },
+                    {
+                        "target": "src/listpack.h",
+                        "source": "src/listpack.h",
+                        "score": 0.73,
+                        "target_tokens": 124,
+                        "source_tokens": 148,
+                    },
+                ],
+            },
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/t_set.c": target_t_set, "src/listpack.c": target_listpack},
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_keeps_large_single_file_match(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/copied.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_copied = self.make_diff(
+            "src/copied.c",
+            [f"result += copied_algorithm_step_{i}(ctx);" for i in range(100)],
+        )
+        target_noise = self.make_diff(
+            "src/local.c",
+            [f"local_state += local_helper_{i}(ctx);" for i in range(20)],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 1.0,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/copied.c", "source": "src/copied.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/copied.c", "source": "src/copied.c"}],
+            "evidence": {
+                "matched_file": {
+                    "target": "src/copied.c",
+                    "source": "src/copied.c",
+                    "target_stats": {"line_count": 100, "token_count": 500},
+                    "source_stats": {"line_count": 100, "token_count": 500},
+                    "patch_id_match": False,
+                },
+                "peer_file_scores": [],
+            },
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/copied.c": target_copied, "src/local.c": target_noise},
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["method"], "file_simhash+deep")
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
+    def test_find_matches_keeps_low_scope_match_with_related_peer_file(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/callsite.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        target_callsite = self.make_diff(
+            "src/callsite.c",
+            [
+                "if (needs_fast_path(value)) {",
+                "    return runFastPath(value);",
+                "}",
+                "return runSlowPath(value);",
+            ],
+        )
+        target_impl = self.make_diff(
+            "src/fastpath.c",
+            [f"state += shared_fastpath_step_{i}(ctx);" for i in range(20)],
+        )
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 1.0,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/callsite.c", "source": "src/callsite.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 1.0,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/callsite.c", "source": "src/callsite.c"}],
+            "evidence": {
+                "matched_file": {
+                    "target": "src/callsite.c",
+                    "source": "src/callsite.c",
+                    "target_stats": {"line_count": 8, "token_count": 60},
+                    "source_stats": {"line_count": 8, "token_count": 60},
+                    "patch_id_match": False,
+                },
+                "peer_file_scores": [
+                    {
+                        "target": "src/fastpath.c",
+                        "source": "src/fastpath.c",
+                        "score": 0.91,
+                        "target_tokens": 160,
+                        "source_tokens": 170,
+                    }
+                ],
+            },
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/callsite.c": target_callsite, "src/fastpath.c": target_impl},
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["method"], "file_simhash+deep")
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
     def test_find_matches_accepts_whole_patch_id_without_layer2(self, mock_layer2, mock_layer1):
         fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": "same"}
         db = {"prs": {"1": {"number": 1, "patch_id": "same", "files": {}}}}

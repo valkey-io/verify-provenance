@@ -148,7 +148,16 @@ def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_d
 
     return sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
 
-def _deep_validation_result(target_diff, source_diff, config, method, matched_files=None, source_info=None):
+def _deep_validation_result(
+    target_diff,
+    source_diff,
+    config,
+    method,
+    matched_files=None,
+    source_info=None,
+    target_diff_files=None,
+    source_diff_files=None,
+):
     score, shared_tokens, _ = deep_compare_diffs(target_diff, source_diff, config)
     match = matched_files[0] if matched_files else {}
     policy = evaluate_diff_exemption(
@@ -162,12 +171,27 @@ def _deep_validation_result(target_diff, source_diff, config, method, matched_fi
     )
     if policy["exempt"]:
         return None
+    evidence = None
+    if method == "file_simhash+deep" and match:
+        evidence = build_layer2_file_evidence(
+            target_path=match.get("target"),
+            source_path=match.get("source"),
+            target_diff=target_diff,
+            source_diff=source_diff,
+            target_diff_files=target_diff_files,
+            source_diff_files=source_diff_files,
+            config=config,
+            score=score,
+            shared_tokens=shared_tokens,
+            patch_id_match=bool(match.get("patch_id_match")),
+        )
     return {
         "accepted": True,
         "score": score,
         "method": method,
         "matched_files": matched_files or [],
         "source_info": source_info,
+        "evidence": evidence,
     }
 
 def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token):
@@ -197,6 +221,8 @@ def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, tok
                     "file_simhash+deep",
                     [match],
                     source_info=source_info,
+                    target_diff_files=valkey_diff_files,
+                    source_diff_files=source_diff_files,
                 )
                 if result and (not best or result["score"] > best["score"]):
                     best = result

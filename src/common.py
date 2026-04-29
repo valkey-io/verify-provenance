@@ -40,6 +40,10 @@ LAYER2_MIN_NORMALIZED_TOKENS = 8
 LAYER2_MIN_SHARED_TOKENS = 6
 LAYER2_MIN_TARGET_TRIGRAM_RATIO = 0.60
 LAYER2_MIN_SHARED_MEANINGFUL_TOKENS = 2
+LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_TOKENS = 120
+LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_LINES = 30
+LAYER2_RELATED_PEER_MIN_SIMILARITY = 0.85
+LAYER2_RELATED_PEER_MIN_TOKENS = 40
 FUZZY_CROSS_PATH_DATA_EXTENSIONS = {".json", ".yaml", ".yml"}
 LOW_SIGNAL_TEST_BACKPORT_MAX_TOKENS = 80
 LOW_SIGNAL_TEST_BACKPORT_MAX_LINES = 30
@@ -614,6 +618,20 @@ def _is_test_path(path):
     return str(PurePosixPath(path)).startswith("tests/")
 
 
+def _is_test_like_path(path):
+    if not path:
+        return False
+    normalized = str(PurePosixPath(path))
+    name = PurePosixPath(path).name.lower()
+    return (
+        normalized.startswith("tests/")
+        or normalized.startswith("src/unit/")
+        or "/test" in normalized
+        or name.startswith("test_")
+        or name.startswith("test-")
+    )
+
+
 def _is_low_signal_release_test_backport(paths, target_diff_files, config, target_title):
     if not _looks_like_release_aggregation_title(target_title):
         return False
@@ -626,6 +644,112 @@ def _is_low_signal_release_test_backport(paths, target_diff_files, config, targe
         ):
             return False
     return True
+
+
+def build_layer2_file_evidence(
+    *,
+    target_path,
+    source_path,
+    target_diff,
+    source_diff,
+    target_diff_files,
+    source_diff_files,
+    config,
+    score,
+    shared_tokens,
+    patch_id_match=False,
+):
+    """Build structured evidence for centralized layer2 policy decisions."""
+    target_stats = _diff_stats_for_paths([target_path], {target_path: target_diff}, config)[0]
+    source_stats = _diff_stats_for_paths([source_path], {source_path: source_diff}, config)[0]
+    peer_scores = []
+
+    for path, peer_target_diff in (target_diff_files or {}).items():
+        if path == target_path or _is_test_like_path(path):
+            continue
+        peer_source_diff = (source_diff_files or {}).get(path)
+        if not peer_source_diff:
+            continue
+        peer_score, peer_shared, _ = deep_compare_diffs(peer_target_diff, peer_source_diff, config)
+        peer_scores.append({
+            "target": path,
+            "source": path,
+            "score": peer_score,
+            "shared_tokens": peer_shared,
+            "target_tokens": len(normalize_diff(peer_target_diff, config).split()),
+            "source_tokens": len(normalize_diff(peer_source_diff, config).split()),
+        })
+
+    return {
+        "matched_file": {
+            "target": target_path,
+            "source": source_path,
+            "score": score,
+            "shared_tokens": shared_tokens,
+            "patch_id_match": patch_id_match,
+            "target_stats": target_stats,
+            "source_stats": source_stats,
+        },
+        "peer_file_scores": peer_scores,
+    }
+
+
+def _has_related_peer_file(evidence):
+    for peer in (evidence or {}).get("peer_file_scores", []):
+        if (
+            peer.get("score", 0.0) >= LAYER2_RELATED_PEER_MIN_SIMILARITY
+            and min(peer.get("target_tokens", 0), peer.get("source_tokens", 0)) >= LAYER2_RELATED_PEER_MIN_TOKENS
+        ):
+            return True
+    return False
+
+
+def _non_test_target_paths(target_diff_files):
+    return {
+        path
+        for path in (target_diff_files or {})
+        if not _is_test_like_path(path) and not _is_low_signal_repository_metadata_path(path)
+    }
+
+
+def _is_low_scope_isolated_layer2_file_match(method, validation, target_diff_files, config):
+    if method != "file_simhash+deep" or not isinstance(validation, dict):
+        return False
+
+    matches = validation.get("matched_files") or []
+    if len(matches) != 1:
+        return False
+
+    match = matches[0]
+    target_path = match.get("target")
+    if not target_path or _is_test_like_path(target_path):
+        return False
+    if match.get("patch_id_match"):
+        return False
+    if validation.get("score", 0.0) < 0.95:
+        return False
+
+    if len(_non_test_target_paths(target_diff_files)) <= 1:
+        return False
+
+    evidence = validation.get("evidence") or {}
+    matched_file = evidence.get("matched_file") or {}
+    if matched_file.get("patch_id_match"):
+        return False
+
+    target_stats = matched_file.get("target_stats") or {}
+    if not target_stats and target_path in (target_diff_files or {}):
+        target_stats = _diff_stats_for_paths([target_path], target_diff_files, config)[0]
+    if not target_stats:
+        return False
+
+    if (
+        target_stats.get("line_count", 0) > LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_LINES
+        or target_stats.get("token_count", 0) > LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_TOKENS
+    ):
+        return False
+
+    return not _has_related_peer_file(evidence)
 
 
 def evaluate_false_positive_filter(
@@ -668,6 +792,9 @@ def evaluate_false_positive_filter(
 
     if _is_low_signal_release_test_backport(paths, target_diff_files, config, target_title):
         return {"filtered": True, "reason": "low_signal_release_test_backport"}
+
+    if _is_low_scope_isolated_layer2_file_match(method, validation, target_diff_files, config):
+        return {"filtered": True, "reason": "low_scope_isolated_layer2_file_match"}
 
     return {"filtered": False, "reason": None}
 
