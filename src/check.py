@@ -392,7 +392,7 @@ def check_diff(
     if not diff_text.strip(): return False, []
 
     diff_text = filter_branding_changes(diff_text, config)
-    diff_text = filter_ignored_provenance_files(diff_text)
+    diff_text = filter_ignored_provenance_files(diff_text, config)
     if not diff_text.strip(): return False, []
 
     earliest_date = get_earliest_commit_date(diff_text)
@@ -472,6 +472,7 @@ def main():
     p.add_argument("--source-prefix")
     p.add_argument("--target-prefix")
     p.add_argument("--infrastructure-patterns")
+    p.add_argument("--exclude-dirs")
     p.add_argument("--pr-db", required=True)
     p.add_argument("--commit-db", required=True)
     p.add_argument("--threshold", type=float, default=0.85)
@@ -488,6 +489,7 @@ def main():
     bps = [tuple(pi.split(":")) for pi in a.branding_pairs.split(",")] if a.branding_pairs else []
     pps = [tuple(pi.split(":")) for pi in a.prefix_pairs.split(",")] if a.prefix_pairs else []
     ips = a.infrastructure_patterns.split(",") if a.infrastructure_patterns else []
+    exclude_dirs = a.exclude_dirs.split(",") if a.exclude_dirs else []
 
     config = ProvenanceConfig(
         source_repo=a.source_repo,
@@ -495,6 +497,7 @@ def main():
         branding_pairs=bps,
         prefix_pairs=pps,
         infrastructure_patterns=ips,
+        exclude_dirs=exclude_dirs,
         source_brand=a.source_brand,
         target_brand=a.target_brand,
         source_prefix=a.source_prefix,

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from backtest import (
     check_pr,
     default_expected_positives,
+    main,
     parse_expected_positives,
     validate_backtest_results,
 )
@@ -70,6 +71,54 @@ class TestBacktest(unittest.TestCase):
         ok, problems = validate_backtest_results([(3080, "match")], [], {3080})
         self.assertTrue(ok)
         self.assertEqual(problems, [])
+
+    @patch("backtest.check_pr")
+    def test_main_forwards_extra_check_arguments(self, mock_check_pr):
+        mock_check_pr.return_value = ("PASS", None)
+        argv = [
+            "backtest.py",
+            "--start", "1",
+            "--end", "1",
+            "--source-repo", "redis/redis",
+            "--target-repo", "valkey-io/valkey",
+            "--source-brand", "Redis",
+            "--target-brand", "Valkey",
+            "--pr-db", "tests/redis_pr_fingerprints.json.gz",
+            "--commit-db", "tests/redis_commits_bootstrap.json.gz",
+            "--exclude-dirs", "deps/",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            main()
+
+        common_args = mock_check_pr.call_args.args[1]
+        self.assertIn("--exclude-dirs", common_args)
+        self.assertIn("deps/", common_args)
+
+    @patch("backtest.check_pr")
+    def test_main_strips_separator_before_forwarding_extra_check_arguments(self, mock_check_pr):
+        mock_check_pr.return_value = ("PASS", None)
+        argv = [
+            "backtest.py",
+            "--start", "1",
+            "--end", "1",
+            "--source-repo", "redis/redis",
+            "--target-repo", "valkey-io/valkey",
+            "--source-brand", "Redis",
+            "--target-brand", "Valkey",
+            "--pr-db", "tests/redis_pr_fingerprints.json.gz",
+            "--commit-db", "tests/redis_commits_bootstrap.json.gz",
+            "--",
+            "--exclude-dirs", "deps/",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            main()
+
+        common_args = mock_check_pr.call_args.args[1]
+        self.assertNotIn("--", common_args)
+        self.assertIn("--exclude-dirs", common_args)
+        self.assertIn("deps/", common_args)
 
 
 if __name__ == "__main__":

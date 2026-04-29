@@ -39,11 +39,18 @@ def read_action_inputs():
 
 
 class TestActionMetadata(unittest.TestCase):
-    def test_action_exposes_pair_configuration_only(self):
+    def test_action_exposes_matching_configuration(self):
         inputs = read_action_inputs()
 
         self.assertIn("branding_pairs", inputs)
         self.assertIn("prefix_pairs", inputs)
+        self.assertIn("exclude_dirs", inputs)
+
+    def test_check_step_passes_excluded_directories(self):
+        with open(ACTION_YML, encoding="utf-8") as f:
+            action = f.read()
+
+        self.assertIn('--exclude-dirs "${{ inputs.exclude_dirs }}"', action)
 
     def test_check_step_captures_exit_code_before_failing(self):
         with open(ACTION_YML, encoding="utf-8") as f:

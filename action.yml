@@ -40,6 +40,10 @@ inputs:
     description: "Similarity threshold"
     required: false
     default: "0.85"
+  exclude_dirs:
+    description: "Comma-separated target-side directories to ignore during check mode (e.g., deps/)"
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -74,7 +78,7 @@ runs:
         else
           PR_NUMBER="${{ github.event.pull_request.number }}"
           set +e
-          python3 ${{ github.action_path }}/src/check.py             $PR_NUMBER             --source-repo "${{ inputs.source_repo }}"             --target-repo "${{ inputs.target_repo }}"             --branding-pairs "${{ inputs.branding_pairs }}" --prefix-pairs "${{ inputs.prefix_pairs }}"             --pr-db ".provenance-db/${{ inputs.pr_db_file }}"             --commit-db ".provenance-db/${{ inputs.commit_db_file }}"             --threshold "${{ inputs.threshold }}"             --verbose 2> .provenance-output.log
+          python3 ${{ github.action_path }}/src/check.py             $PR_NUMBER             --source-repo "${{ inputs.source_repo }}"             --target-repo "${{ inputs.target_repo }}"             --branding-pairs "${{ inputs.branding_pairs }}" --prefix-pairs "${{ inputs.prefix_pairs }}"             --exclude-dirs "${{ inputs.exclude_dirs }}"             --pr-db ".provenance-db/${{ inputs.pr_db_file }}"             --commit-db ".provenance-db/${{ inputs.commit_db_file }}"             --threshold "${{ inputs.threshold }}"             --verbose 2> .provenance-output.log
           EXIT_CODE=$?
           set -e
           if [ $EXIT_CODE -eq 1 ] && grep -q "matches" .provenance-output.log; then

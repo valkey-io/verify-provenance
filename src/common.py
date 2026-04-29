@@ -80,6 +80,7 @@ class ProvenanceConfig:
                  branding_pairs=None,
                  prefix_pairs=None,
                  infrastructure_patterns=None,
+                 exclude_dirs=None,
                  **kwargs):
         self.source_repo = source_repo
         self.target_repo = target_repo
@@ -102,6 +103,11 @@ class ProvenanceConfig:
                 self.prefix_pairs.append(p)
 
         self.infrastructure_patterns = infrastructure_patterns or []
+        self.exclude_dirs = [
+            str(PurePosixPath(path.strip().strip("/")))
+            for path in (exclude_dirs or [])
+            if path and path.strip().strip("/")
+        ]
 
     @classmethod
     def from_dict(cls, d):
@@ -267,14 +273,24 @@ def is_ignored_provenance_file(path):
     )
 
 
-def filter_ignored_provenance_files(diff_text):
+def _is_in_excluded_dir(path, config):
+    if not path or not config:
+        return False
+    normalized = str(PurePosixPath(path))
+    for excluded in getattr(config, "exclude_dirs", []):
+        if normalized == excluded or normalized.startswith(excluded + "/"):
+            return True
+    return False
+
+
+def filter_ignored_provenance_files(diff_text, config=None):
     files = split_diff_by_file(diff_text)
     if not files:
         return diff_text
     kept = [
         file_diff
         for path, file_diff in files.items()
-        if not is_ignored_provenance_file(path)
+        if not is_ignored_provenance_file(path) and not _is_in_excluded_dir(path, config)
     ]
     return "\n".join(kept)
 

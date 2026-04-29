@@ -48,6 +48,66 @@ class TestCheckLogic(unittest.TestCase):
         mock_find_matches.assert_not_called()
 
     @patch("check.find_matches")
+    def test_check_diff_ignores_configured_excluded_directories_before_matching(self, mock_find_matches):
+        config = ProvenanceConfig(
+            source_repo="redis/redis",
+            target_repo="valkey-io/valkey",
+            exclude_dirs=["deps/"],
+        )
+        diff = self.make_diff(
+            "deps/lz4/lz4.c",
+            [
+                "int lz4_copy_block(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    total += 4;",
+                "    total += 5;",
+                "    return total;",
+                "}",
+            ],
+        )
+
+        found, findings = check_diff(
+            diff.encode("utf-8"),
+            {"prs": {}},
+            {"commits": {}},
+            config,
+        )
+
+        self.assertFalse(found)
+        self.assertEqual(findings, [])
+        mock_find_matches.assert_not_called()
+
+    @patch("check.find_matches")
+    def test_check_diff_keeps_dependency_code_without_configured_exclusion(self, mock_find_matches):
+        diff = self.make_diff(
+            "deps/lz4/lz4.c",
+            [
+                "int lz4_copy_block(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    total += 4;",
+                "    total += 5;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_find_matches.side_effect = [[], []]
+
+        found, findings = check_diff(
+            diff.encode("utf-8"),
+            {"prs": {}},
+            {"commits": {}},
+            self.config,
+        )
+
+        self.assertFalse(found)
+        self.assertEqual(findings, [])
+        self.assertEqual(mock_find_matches.call_count, 2)
+
+    @patch("check.find_matches")
     def test_check_diff_reports_matching_file_pairs(self, mock_find_matches):
         diff = self.make_diff(
             "src/compression.c",

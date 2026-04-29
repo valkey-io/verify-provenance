@@ -119,6 +119,9 @@ def main():
     if args.branding_pairs: common_args.extend(["--branding-pairs", args.branding_pairs])
     if args.prefix_pairs: common_args.extend(["--prefix-pairs", args.prefix_pairs])
     if args.verbose: common_args.append("--verbose")
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+    common_args.extend(extra)
 
     expected_positives = (
         parse_expected_positives(args.expected_positives)

@@ -60,6 +60,7 @@ jobs:
           target_repo: "${{ github.repository }}"
           branding_pairs: "Redis:Valkey,KeyDB:Valkey"
           prefix_pairs: "RM_:VM_,REDISMODULE_:VALKEYMODULE_"
+          exclude_dirs: "deps/"
           github_token: "${{ secrets.GITHUB_TOKEN }}"
 ```
 
@@ -72,6 +73,7 @@ jobs:
 | `target_repo` | Your repository (e.g., `valkey-io/valkey`) | **Required** |
 | `branding_pairs` | Comma-separated `Source:Target` brand pairs | - |
 | `prefix_pairs` | Comma-separated `Source:Target` prefix pairs | - |
+| `exclude_dirs` | Comma-separated target-side directories to ignore during check mode | - |
 | `db_branch` | Orphan branch for databases | `verify-provenance-db` |
 | `pr_db_file` | Filename of PR database | `pr_fingerprints.json.gz` |
 | `commit_db_file` | Filename of commit database | `commits_bootstrap.json.gz` |
