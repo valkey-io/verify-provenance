@@ -60,6 +60,17 @@ LOW_SIGNAL_REPOSITORY_METADATA_FILES = {
     "makefile",
     "cmakelists.txt",
 }
+DEPENDENCY_LICENSE_FILENAMES = {
+    "copying",
+    "copying.md",
+    "copying.txt",
+    "license",
+    "license.md",
+    "license.txt",
+    "notice",
+    "notice.md",
+    "notice.txt",
+}
 
 class ProvenanceConfig:
     """Configuration container for repository-specific src settings."""
@@ -243,6 +254,29 @@ def split_diff_by_file(diff_text):
             current_lines.append(line)
     if current_file and current_lines: files[current_file] = "\n".join(current_lines)
     return files
+
+
+def is_ignored_provenance_file(path):
+    if not path:
+        return False
+    normalized = PurePosixPath(path)
+    return (
+        len(normalized.parts) >= 3
+        and normalized.parts[0] == "deps"
+        and normalized.name.lower() in DEPENDENCY_LICENSE_FILENAMES
+    )
+
+
+def filter_ignored_provenance_files(diff_text):
+    files = split_diff_by_file(diff_text)
+    if not files:
+        return diff_text
+    kept = [
+        file_diff
+        for path, file_diff in files.items()
+        if not is_ignored_provenance_file(path)
+    ]
+    return "\n".join(kept)
 
 
 def simhash64(text):

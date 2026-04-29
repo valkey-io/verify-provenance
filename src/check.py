@@ -273,6 +273,39 @@ def _false_positive_filtered(candidate, db_type, method, config, target_author, 
         return True
     return False
 
+def _matched_file_pairs(match):
+    pairs = []
+    source_pairs = (match.get("layer2") or {}).get("matched_files") or match.get("matched_files") or []
+    if match.get("method") == "file_patch_id":
+        patch_pairs = [pair for pair in source_pairs if pair.get("patch_id_match")]
+        source_pairs = patch_pairs or source_pairs
+    seen = set()
+    for pair in source_pairs:
+        target = pair.get("target")
+        source = pair.get("source")
+        if not target or not source:
+            continue
+        key = (target, source)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({
+            "target": target,
+            "source": source,
+            "similarity": pair.get("sim"),
+            "patch_id_match": bool(pair.get("patch_id_match")),
+        })
+    return pairs
+
+def _format_file_pairs(file_pairs, limit=5):
+    if not file_pairs:
+        return ""
+    shown = file_pairs[:limit]
+    rendered = [f"{pair['target']} <- {pair['source']}" for pair in shown]
+    if len(file_pairs) > limit:
+        rendered.append(f"... {len(file_pairs) - limit} more")
+    return "; file pairs: " + "; ".join(rendered)
+
 def find_matches(
     fingerprint,
     db,
@@ -359,10 +392,14 @@ def check_diff(
     if not diff_text.strip(): return False, []
 
     diff_text = filter_branding_changes(diff_text, config)
+    diff_text = filter_ignored_provenance_files(diff_text)
+    if not diff_text.strip(): return False, []
+
     earliest_date = get_earliest_commit_date(diff_text)
     effective_date = min(earliest_date, pr_date) if earliest_date and pr_date else (earliest_date or pr_date)
 
     diff_files = split_diff_by_file(diff_text)
+    if not diff_files: return False, []
     if evaluate_diff_exemption(diff_text, config)["exempt"]: return False, []
 
     norm_all = normalize_diff(diff_text, config)
@@ -400,12 +437,26 @@ def check_diff(
     findings = []
     for m in pr_matches:
         s = m.get("deep_sim") if m.get("deep_sim") is not None else m["sim"]
-        msg = "matches {} PR #{} (similarity: {:.3f}, method: {})".format(config.source_repo, m["entry"]["number"], s, m["method"])
-        findings.append((msg, {"type": "pr", "number": m["entry"]["number"]}))
+        file_pairs = _matched_file_pairs(m)
+        msg = "matches {} PR #{} (similarity: {:.3f}, method: {}){}".format(
+            config.source_repo,
+            m["entry"]["number"],
+            s,
+            m["method"],
+            _format_file_pairs(file_pairs),
+        )
+        findings.append((msg, {"type": "pr", "number": m["entry"]["number"], "file_pairs": file_pairs}))
     for m in commit_matches:
         s = m.get("deep_sim") if m.get("deep_sim") is not None else m["sim"]
-        msg = "matches {} commit {} (similarity: {:.3f}, method: {})".format(config.source_repo, m["entry"]["sha"], s, m["method"])
-        findings.append((msg, {"type": "commit", "sha": m["entry"]["sha"]}))
+        file_pairs = _matched_file_pairs(m)
+        msg = "matches {} commit {} (similarity: {:.3f}, method: {}){}".format(
+            config.source_repo,
+            m["entry"]["sha"],
+            s,
+            m["method"],
+            _format_file_pairs(file_pairs),
+        )
+        findings.append((msg, {"type": "commit", "sha": m["entry"]["sha"], "file_pairs": file_pairs}))
 
     return bool(findings), findings
 

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from check import find_matches, layer1_find_candidates, layer2_validate_candidate
+from check import check_diff, find_matches, layer1_find_candidates, layer2_validate_candidate
 from common import ProvenanceConfig
 
 
@@ -27,6 +27,80 @@ class TestCheckLogic(unittest.TestCase):
                 "@@ -0,0 +1,6 @@",
                 *[f"+{line}" for line in added_lines],
             ]
+        )
+
+    @patch("check.find_matches")
+    def test_check_diff_ignores_dependency_license_files_before_matching(self, mock_find_matches):
+        diff = self.make_diff(
+            "deps/lz4/LICENSE",
+            [f"license boilerplate clause {i} with common copyright terms" for i in range(12)],
+        )
+
+        found, findings = check_diff(
+            diff.encode("utf-8"),
+            {"prs": {}},
+            {"commits": {}},
+            self.config,
+        )
+
+        self.assertFalse(found)
+        self.assertEqual(findings, [])
+        mock_find_matches.assert_not_called()
+
+    @patch("check.find_matches")
+    def test_check_diff_reports_matching_file_pairs(self, mock_find_matches):
+        diff = self.make_diff(
+            "src/compression.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    total += 3;",
+                "    return total;",
+                "}",
+            ],
+        )
+        mock_find_matches.side_effect = [
+            [
+                {
+                    "entry": {"number": 42},
+                    "method": "file_simhash+deep",
+                    "deep_sim": 0.93,
+                    "sim": 0.90,
+                    "layer2": {
+                        "matched_files": [
+                            {
+                                "target": "src/compression.c",
+                                "source": "src/old_compression.c",
+                                "sim": 0.91,
+                                "patch_id_match": False,
+                            }
+                        ]
+                    },
+                }
+            ],
+            [],
+        ]
+
+        found, findings = check_diff(
+            diff.encode("utf-8"),
+            {"prs": {"42": {}}},
+            {"commits": {}},
+            self.config,
+        )
+
+        self.assertTrue(found)
+        self.assertIn("file pairs: src/compression.c <- src/old_compression.c", findings[0][0])
+        self.assertEqual(
+            findings[0][1]["file_pairs"],
+            [
+                {
+                    "target": "src/compression.c",
+                    "source": "src/old_compression.c",
+                    "similarity": 0.91,
+                    "patch_id_match": False,
+                }
+            ],
         )
 
     @patch("check.layer1_find_candidates")
