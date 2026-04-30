@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse, email.utils, json, logging, os, re, subprocess, sys
 from datetime import timezone
+from urllib.error import HTTPError, URLError
 from common import *
+from config import config_from_args
+from providers import GitHubSourceProvider
 
 def get_earliest_commit_date(diff_text):
     dates = re.findall(r"Date: (.*)", diff_text)
@@ -9,7 +12,8 @@ def get_earliest_commit_date(diff_text):
     try:
         parsed = [email.utils.parsedate_to_datetime(d) for d in dates]
         return min(parsed).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    except: return None
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        return None
 
 def _db_items(db, db_type):
     return db.get("prs", {}) if db_type == "pr" else db.get("commits", {})
@@ -134,6 +138,22 @@ def _source_pr_policy_info(pr_info):
         "author_login": author_login_from_info(pr_info),
     }
 
+
+class _FunctionSourceProvider:
+    """Compatibility provider that calls module-level fetch helpers."""
+
+    def __init__(self, token):
+        self.token = token
+
+    def fetch_pr_diff(self, owner, repo, pr_number):
+        return fetch_pr_diff(owner, repo, pr_number, self.token)
+
+    def fetch_commit_diff(self, owner, repo, sha):
+        return fetch_commit_diff(owner, repo, sha, self.token)
+
+    def fetch_pr_info(self, owner, repo, pr_number):
+        return fetch_pr_info(owner, repo, pr_number, self.token)
+
 def layer1_find_candidates(fingerprint, db, db_type, config, date=None, ignore_date=False):
     files = fingerprint.get("files", {})
     if not any(not is_infrastructure_file(f, config) for f in files):
@@ -194,54 +214,51 @@ def _deep_validation_result(
         "evidence": evidence,
     }
 
-def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token):
-    try:
-        owner, repo = config.source_repo.split("/")
-        source_info = None
-        if db_type == "pr":
-            source_diff_raw, source_info = fetch_pr_diff(owner, repo, candidate["entry"].get("number"), token)
-            source_info = _source_pr_policy_info(source_info)
-        else:
-            source_diff_raw = fetch_commit_diff(owner, repo, candidate["entry"].get("sha"), token)
+def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token=None, source_provider=None):
+    owner, repo = config.source_repo.split("/")
+    provider = source_provider or _FunctionSourceProvider(token)
+    source_info = None
+    if db_type == "pr":
+        source_diff_raw, source_info = provider.fetch_pr_diff(owner, repo, candidate["entry"].get("number"))
+        source_info = _source_pr_policy_info(source_info)
+    else:
+        source_diff_raw = provider.fetch_commit_diff(owner, repo, candidate["entry"].get("sha"))
 
-        source_diff = source_diff_raw.decode("utf-8", errors="replace")
-        matched_files = candidate.get("matched_files") or []
-        if matched_files:
-            source_diff_files = split_diff_by_file(source_diff)
-            best = None
-            for match in matched_files:
-                target_diff = valkey_diff_files.get(match["target"])
-                source_file_diff = source_diff_files.get(match["source"])
-                if not target_diff or not source_file_diff:
-                    continue
-                result = _deep_validation_result(
-                    target_diff,
-                    source_file_diff,
-                    config,
-                    "file_simhash+deep",
-                    [match],
-                    source_info=source_info,
-                    target_diff_files=valkey_diff_files,
-                    source_diff_files=source_diff_files,
-                )
-                if result and (not best or result["score"] > best["score"]):
-                    best = result
-            if best:
-                return best
-            if len(valkey_diff_files) == 1 and len(source_diff_files) == 1:
-                return None
+    source_diff = source_diff_raw.decode("utf-8", errors="replace")
+    matched_files = candidate.get("matched_files") or []
+    if matched_files:
+        source_diff_files = split_diff_by_file(source_diff)
+        best = None
+        for match in matched_files:
+            target_diff = valkey_diff_files.get(match["target"])
+            source_file_diff = source_diff_files.get(match["source"])
+            if not target_diff or not source_file_diff:
+                continue
+            result = _deep_validation_result(
+                target_diff,
+                source_file_diff,
+                config,
+                "file_simhash+deep",
+                [match],
+                source_info=source_info,
+                target_diff_files=valkey_diff_files,
+                source_diff_files=source_diff_files,
+            )
+            if result and (not best or result["score"] > best["score"]):
+                best = result
+        if best:
+            return best
+        if len(valkey_diff_files) == 1 and len(source_diff_files) == 1:
+            return None
 
-        valkey_combined = "\n".join(valkey_diff_files.values())
-        return _deep_validation_result(
-            valkey_combined,
-            source_diff,
-            config,
-            "whole_simhash+deep",
-            source_info=source_info,
-        )
-    except Exception as e:
-        logger.debug("Layer 2 validation failed for %s: %s", candidate.get("key"), e)
-        return None
+    valkey_combined = "\n".join(valkey_diff_files.values())
+    return _deep_validation_result(
+        valkey_combined,
+        source_diff,
+        config,
+        "whole_simhash+deep",
+        source_info=source_info,
+    )
 
 def _exact_candidate_has_reportable_diff(candidate, method, diff_files, config):
     if not diff_files:
@@ -267,7 +284,7 @@ def _resolve_exact_candidate(candidate, db_type, target_author, diff_files, conf
         return {"accepted": False, "reason": "diff_exempt"}
     return {"accepted": True, "method": method, "deep_sim": 1.0}
 
-def _source_info_for_policy(candidate, db_type, config, token):
+def _source_info_for_policy(candidate, db_type, config, token=None, source_provider=None):
     entry = candidate.get("entry", {}) if isinstance(candidate, dict) else {}
     if db_type != "pr":
         return entry
@@ -277,8 +294,9 @@ def _source_info_for_policy(candidate, db_type, config, token):
         return entry
     try:
         owner, repo = config.source_repo.split("/")
-        return _source_pr_policy_info(fetch_pr_info(owner, repo, entry.get("number"), token))
-    except Exception as e:
+        provider = source_provider or _FunctionSourceProvider(token)
+        return _source_pr_policy_info(provider.fetch_pr_info(owner, repo, entry.get("number")))
+    except (HTTPError, URLError, OSError, RuntimeError, KeyError, ValueError) as e:
         logger.debug("Source PR metadata fetch failed for %s: %s", entry.get("number"), e)
         return entry
 
@@ -344,18 +362,20 @@ def find_matches(
     ignore_date=False,
     target_author=None,
     target_title=None,
+    source_provider=None,
 ):
     candidates = layer1_find_candidates(fingerprint, db, db_type, config, date, ignore_date)
     if not candidates: return []
 
     token = os.environ.get("GITHUB_TOKEN")
+    provider = source_provider or _FunctionSourceProvider(token)
     results = []
     for cand in candidates[:max_report * 2]:
         exact = _resolve_exact_candidate(cand, db_type, target_author, diff_files, config)
         if exact:
             if not exact["accepted"]:
                 continue
-            source_info = _source_info_for_policy(cand, db_type, config, token)
+            source_info = _source_info_for_policy(cand, db_type, config, token, provider)
             if _false_positive_filtered(
                 cand,
                 db_type,
@@ -377,7 +397,7 @@ def find_matches(
             results.append(cand)
             continue
 
-        validation = layer2_validate_candidate(diff_files, cand, db_type, config, token)
+        validation = layer2_validate_candidate(diff_files, cand, db_type, config, token, provider)
         if not validation or validation["score"] < threshold:
             continue
         if _false_positive_filtered(
@@ -413,6 +433,7 @@ def check_diff(
     ignore_date=False,
     target_author=None,
     target_title=None,
+    source_provider=None,
 ):
     diff_text = diff_bytes.decode("utf-8", errors="replace")
     if not diff_text.strip(): return False, []
@@ -447,6 +468,7 @@ def check_diff(
         ignore_date,
         target_author,
         target_title,
+        source_provider,
     )
     commit_matches = find_matches(
         fingerprint,
@@ -458,6 +480,7 @@ def check_diff(
         effective_date,
         diff_files,
         ignore_date,
+        source_provider=source_provider,
     )
 
     findings = []
@@ -512,24 +535,8 @@ def main():
     ll = logging.DEBUG if a.verbose else logging.INFO
     logger.setLevel(ll)
 
-    bps = [tuple(pi.split(":")) for pi in a.branding_pairs.split(",")] if a.branding_pairs else []
-    pps = [tuple(pi.split(":")) for pi in a.prefix_pairs.split(",")] if a.prefix_pairs else []
-    ips = a.infrastructure_patterns.split(",") if a.infrastructure_patterns else []
-    exclude_dirs = a.exclude_dirs.split(",") if a.exclude_dirs else []
-
-    config = ProvenanceConfig(
-        source_repo=a.source_repo,
-        target_repo=a.target_repo,
-        branding_pairs=bps,
-        prefix_pairs=pps,
-        infrastructure_patterns=ips,
-        exclude_dirs=exclude_dirs,
-        source_brand=a.source_brand,
-        target_brand=a.target_brand,
-        source_prefix=a.source_prefix,
-        target_prefix=a.target_prefix
-    )
-    pr_db, commit_db = load_db(a.pr_db), load_db(a.commit_db)
+    config = config_from_args(a)
+    pr_db, commit_db = load_db(a.pr_db, strict=True), load_db(a.commit_db, strict=True)
 
     if not pr_db and not commit_db:
         logger.error("No databases loaded.")
@@ -537,6 +544,7 @@ def main():
 
     logger.info("Loaded {} PRs and {} commits".format(len(pr_db.get('prs', {})), len(commit_db.get('commits', {}))))
     token = os.environ.get("GITHUB_TOKEN")
+    source_provider = GitHubSourceProvider(token)
     t_owner, t_repo = config.target_repo.split("/")
 
     if a.pr_number:
@@ -554,11 +562,12 @@ def main():
                 a.ignore_date,
                 target_author,
                 pr_info.get("title"),
+                source_provider,
             )
             if found:
                 for msg, _ in findings: logger.info("    - %s", msg)
                 sys.exit(1)
-        except Exception as e:
+        except (HTTPError, URLError, OSError, RuntimeError, KeyError, ValueError) as e:
             logger.error(e)
             sys.exit(1)
     else:
@@ -573,7 +582,16 @@ def main():
             logger.error("git diff failed for %s...%s%s", base, head, f": {err}" if err else "")
             sys.exit(1)
         diff_bytes = res.stdout
-        found, findings = check_diff(diff_bytes, pr_db, commit_db, config, a.threshold, a.max_report, ignore_date=a.ignore_date)
+        found, findings = check_diff(
+            diff_bytes,
+            pr_db,
+            commit_db,
+            config,
+            a.threshold,
+            a.max_report,
+            ignore_date=a.ignore_date,
+            source_provider=source_provider,
+        )
         if found:
             for msg, _ in findings: logger.info("    - %s", msg)
             sys.exit(1)

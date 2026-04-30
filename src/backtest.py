@@ -76,7 +76,7 @@ def check_pr(pr_number, common_args):
 
     except subprocess.TimeoutExpired:
         return "TIMEOUT", None
-    except Exception as e:
+    except OSError as e:
         return "ERROR", str(e)[:100]
 
 def main():

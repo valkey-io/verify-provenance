@@ -1269,6 +1269,84 @@ class TestCheckLogic(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(result["method"], "whole_simhash+deep")
 
+    def test_layer2_uses_injected_source_provider(self):
+        class FakeProvider:
+            def __init__(self, diff):
+                self.diff = diff
+                self.calls = []
+
+            def fetch_pr_diff(self, owner, repo, pr_number):
+                self.calls.append(("pr", owner, repo, pr_number))
+                return self.diff.encode("utf-8"), {"number": pr_number}
+
+        target = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    return total;",
+                "}",
+            ],
+        )
+        provider = FakeProvider(target)
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [
+                {
+                    "target": "src/a.c",
+                    "source": "src/a.c",
+                    "sim": 1.0,
+                    "same_path": True,
+                    "patch_id_match": False,
+                }
+            ],
+        }
+
+        result = layer2_validate_candidate(
+            {"src/a.c": target},
+            candidate,
+            "pr",
+            self.config,
+            source_provider=provider,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(provider.calls, [("pr", "redis", "redis", 42)])
+
+    def test_layer2_source_provider_failure_propagates(self):
+        class FailingProvider:
+            def fetch_pr_diff(self, owner, repo, pr_number):
+                raise RuntimeError("source unavailable")
+
+        target = self.make_diff(
+            "src/a.c",
+            [
+                "int copied(int input) {",
+                "    int total = input + 1;",
+                "    total += 2;",
+                "    return total;",
+                "}",
+            ],
+        )
+        candidate = {
+            "key": "42",
+            "entry": {"number": 42},
+            "signals": ["file_simhash"],
+            "matched_files": [{"target": "src/a.c", "source": "src/a.c", "sim": 1.0}],
+        }
+
+        with self.assertRaises(RuntimeError):
+            layer2_validate_candidate(
+                {"src/a.c": target},
+                candidate,
+                "pr",
+                self.config,
+                source_provider=FailingProvider(),
+            )
+
     def test_layer1_file_match_is_path_independent(self):
         fingerprint = {
             "simhash64": 0,

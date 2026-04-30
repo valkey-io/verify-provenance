@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from urllib.error import HTTPError, URLError
 from common import (
     simhash64,
     normalize_diff,
@@ -21,9 +22,9 @@ from common import (
     split_diff_by_file,
     load_db,
     compute_file_fingerprints,
-    ProvenanceConfig,
     logger,
 )
+from config import config_from_args
 
 PER_PAGE = 100
 MAX_PAGES = 100
@@ -128,7 +129,7 @@ def refresh_prs(args, config):
             if len(prs) % 10 == 0:
                 _save_db(args, prs, failed_prs)
                 logger.info(f"Checkpoint: saved {len(prs)} PRs")
-        except Exception as e:
+        except (HTTPError, URLError, OSError, RuntimeError, KeyError, ValueError) as e:
             failed_prs[str(pr_num)] = _failed_pr_record(pr, e)
             logger.warning(f"Failed PR #{pr_num}: {e}")
 
@@ -180,18 +181,7 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    bps = [tuple(p.split(":")) for p in args.branding_pairs.split(",")] if args.branding_pairs else []
-    pps = [tuple(p.split(":")) for p in args.prefix_pairs.split(",")] if args.prefix_pairs else []
-    config = ProvenanceConfig(
-        source_repo=f"{args.source_owner}/{args.source_repo_name}",
-        target_repo="",
-        branding_pairs=bps,
-        prefix_pairs=pps,
-        source_brand=args.source_brand,
-        target_brand=args.target_brand,
-        source_prefix=args.source_prefix,
-        target_prefix=args.target_prefix
-    )
+    config = config_from_args(args, source_repo=f"{args.source_owner}/{args.source_repo_name}", target_repo="")
     refresh_prs(args, config)
 
 if __name__ == "__main__": main()

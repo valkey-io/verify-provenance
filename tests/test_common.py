@@ -6,6 +6,7 @@ test_common.py - Comprehensive tests for common.py logic
 import unittest
 import sys
 import os
+import tempfile
 from textwrap import dedent
 
 # Add src directory to path
@@ -23,7 +24,10 @@ from common import (
     evaluate_diff_exemption,
     is_infrastructure_file,
     filter_branding_changes,
+    FALSE_POSITIVE_RULES,
 )
+from config import config_from_args, parse_pair_list
+from db import DatabaseLoadError, load_db
 
 
 class TestCommonCore(unittest.TestCase):
@@ -151,6 +155,41 @@ class TestNormalization(unittest.TestCase):
         diff = "+int C++_Val = 1;"
         norm = normalize_diff(diff, cfg)
         self.assertIn("int C ++ _Val = NUM ;", norm)
+
+    def test_shared_pair_parser_rejects_invalid_pairs(self):
+        with self.assertRaises(ValueError):
+            parse_pair_list("Redis-Valkey")
+
+    def test_config_from_args_preserves_legacy_single_pairs(self):
+        class Args:
+            source_repo = "redis/redis"
+            target_repo = "valkey-io/valkey"
+            branding_pairs = "Redis:Valkey,KeyDB:Valkey"
+            prefix_pairs = "RM_:VM_"
+            infrastructure_patterns = ".github/,deps/"
+            exclude_dirs = "deps/"
+            source_brand = None
+            target_brand = None
+            source_prefix = "REDISMODULE_"
+            target_prefix = "VALKEYMODULE_"
+
+        cfg = config_from_args(Args())
+        self.assertEqual(cfg.branding_pairs, [("Redis", "Valkey"), ("KeyDB", "Valkey")])
+        self.assertEqual(cfg.prefix_pairs, [("RM_", "VM_"), ("REDISMODULE_", "VALKEYMODULE_")])
+        self.assertEqual(cfg.infrastructure_patterns, [".github/", "deps/"])
+        self.assertEqual(cfg.exclude_dirs, ["deps"])
+
+    def test_false_positive_policy_uses_named_rule_dispatcher(self):
+        rule_names = [rule.__name__ for rule in FALSE_POSITIVE_RULES]
+        self.assertIn("_same_author_pr_rule", rule_names)
+        self.assertIn("_low_scope_isolated_layer2_file_match_rule", rule_names)
+
+    def test_strict_db_load_reports_corrupt_database(self):
+        with tempfile.NamedTemporaryFile(suffix=".json.gz") as tmp:
+            tmp.write(b"not a gzip database")
+            tmp.flush()
+            with self.assertRaises(DatabaseLoadError):
+                load_db(tmp.name, strict=True)
 
     def test_normalization_of_very_small_diff(self):
         """Verify context inclusion heuristic for very small diffs."""

@@ -2,19 +2,16 @@
 common.py - Shared utilities for Provenance Guard
 """
 
-import gzip
 import hashlib
-import json
 import logging
-import os
 import re
-import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
+from config import ProvenanceConfig
+from db import load_db
+from git_utils import PatchIdError, compute_patch_id
+from github_client import fetch_commit_diff, fetch_pr_diff, fetch_pr_info, github_request
 
 
 # Configure logging
@@ -76,47 +73,6 @@ DEPENDENCY_LICENSE_FILENAMES = {
     "notice.txt",
 }
 
-class ProvenanceConfig:
-    """Configuration container for repository-specific src settings."""
-    def __init__(self,
-                 source_repo=None,
-                 target_repo=None,
-                 branding_pairs=None,
-                 prefix_pairs=None,
-                 infrastructure_patterns=None,
-                 exclude_dirs=None,
-                 **kwargs):
-        self.source_repo = source_repo
-        self.target_repo = target_repo
-        self.branding_pairs = list(branding_pairs) if branding_pairs else []
-        self.prefix_pairs = list(prefix_pairs) if prefix_pairs else []
-
-        # Handle backward compatibility
-        self.source_brand = kwargs.get("source_brand")
-        self.target_brand = kwargs.get("target_brand")
-        if self.source_brand or self.target_brand:
-            p = (self.source_brand, self.target_brand)
-            if p not in self.branding_pairs:
-                self.branding_pairs.append(p)
-
-        self.source_prefix = kwargs.get("source_prefix")
-        self.target_prefix = kwargs.get("target_prefix")
-        if self.source_prefix or self.target_prefix:
-            p = (self.source_prefix, self.target_prefix)
-            if p not in self.prefix_pairs:
-                self.prefix_pairs.append(p)
-
-        self.infrastructure_patterns = infrastructure_patterns or []
-        self.exclude_dirs = [
-            str(PurePosixPath(path.strip().strip("/")))
-            for path in (exclude_dirs or [])
-            if path and path.strip().strip("/")
-        ]
-
-    @classmethod
-    def from_dict(cls, d):
-        return cls(**d)
-
 # Keywords to preserve during normalization (C, Python, Tcl)
 PRESERVED_KEYWORDS = {
     # C / C++
@@ -138,82 +94,6 @@ PRESERVED_KEYWORDS = {
 }
 
 
-def github_request(url, headers, retry=3):
-    """Make GitHub API request with retry and rate limit handling."""
-    for attempt in range(retry):
-        try:
-            req = Request(url, headers=headers)
-            with urlopen(req, timeout=30) as response:
-                return response.read(), response.status
-        except HTTPError as e:
-            if e.code == 403:
-                reset_time = e.headers.get("X-RateLimit-Reset")
-                if reset_time:
-                    raw_wait = max(int(reset_time) - int(time.time()), 0) + 1
-                    wait = min(raw_wait, 300)
-                    logger.warning(f"Rate limited. Waiting {wait}s")
-                    if raw_wait > 600:
-                        raise RuntimeError(f"Rate limit reset time too far in future: {raw_wait}s") from e
-                    time.sleep(wait)
-                    continue
-                else:
-                    raise
-            if e.code >= 500 and attempt < retry - 1:
-                wait = 2**attempt
-                time.sleep(wait)
-                continue
-            raise
-        except URLError:
-            if attempt < retry - 1:
-                wait = 2**attempt
-                time.sleep(wait)
-                continue
-            raise
-    raise RuntimeError(f"Failed to fetch {url} after {retry} attempts")
-
-
-def fetch_pr_info(owner, repo, pr_number, token):
-    """Fetch PR metadata from GitHub API."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Provenance-Guard",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data, _ = github_request(url, headers)
-    return json.loads(data.decode("utf-8", errors="replace"))
-
-
-def fetch_pr_diff(owner, repo, pr_number, token):
-    """Fetch PR diff using HEAD commit."""
-    pr_info = fetch_pr_info(owner, repo, pr_number, token)
-    base_sha = pr_info["base"]["sha"]
-    head_sha = pr_info["head"]["sha"]
-    url = f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}"
-    headers = {
-        "Accept": "application/vnd.github.v3.diff",
-        "User-Agent": "Provenance-Guard",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data, _ = github_request(url, headers)
-    return data, pr_info
-
-
-def fetch_commit_diff(owner, repo, sha, token):
-    """Fetch commit diff from GitHub API."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
-    headers = {
-        "Accept": "application/vnd.github.v3.diff",
-        "User-Agent": "Provenance-Guard",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data, _ = github_request(url, headers)
-    return data
-
-
 def normalize_timestamp(timestamp):
     """Normalize ISO 8601 timestamp to UTC with \'Z\' suffix."""
     if not timestamp: return timestamp
@@ -222,7 +102,7 @@ def normalize_timestamp(timestamp):
         dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         utc_dt = dt.astimezone(timezone.utc)
         return utc_dt.isoformat().replace("+00:00", "Z")
-    except Exception as e:
+    except ValueError as e:
         logger.error(f"Invalid timestamp format: {timestamp}")
         raise ValueError(f"Invalid timestamp format: {timestamp}") from e
 
@@ -412,17 +292,6 @@ def normalize_identifier(identifier, config):
     return identifier
 
 
-def compute_patch_id(diff_text):
-    """Compute git patch-id for a diff."""
-    try:
-        diff_bytes = diff_text.encode("utf-8") if isinstance(diff_text, str) else diff_text
-        result = subprocess.run(["git", "patch-id", "--stable"], input=diff_bytes, capture_output=True, timeout=10)
-        if result.returncode == 0 and result.stdout:
-            return result.stdout.decode("utf-8").split()[0]
-        return None
-    except Exception: return None
-
-
 def hamming_distance(a, b):
     xor = a ^ b
     count = 0
@@ -435,13 +304,6 @@ def hamming_distance(a, b):
 def compute_simhash_similarity(simhash_a, simhash_b):
     distance = hamming_distance(simhash_a, simhash_b)
     return 1.0 - (distance / 64.0)
-
-
-def load_db(path):
-    if not os.path.exists(path): return {}
-    try:
-        with gzip.open(path, "rt", encoding="utf-8") as f: return json.load(f)
-    except Exception: return {}
 
 
 def compute_file_fingerprints(diff_files, config):
@@ -752,6 +614,109 @@ def _is_low_scope_isolated_layer2_file_match(method, validation, target_diff_fil
     return not _has_related_peer_file(evidence)
 
 
+def _false_positive_context(
+    candidate,
+    db_type,
+    method,
+    config,
+    target_author,
+    target_title,
+    target_diff_files,
+    source_info,
+    validation,
+):
+    entry = candidate.get("entry", {}) if isinstance(candidate, dict) else {}
+    source_info = source_info or {}
+    return {
+        "candidate": candidate,
+        "entry": entry,
+        "db_type": db_type,
+        "method": method,
+        "config": config,
+        "target_author": _normalize_login(target_author),
+        "target_title": target_title,
+        "target_diff_files": target_diff_files,
+        "source_info": source_info,
+        "source_author": author_login_from_info(source_info) or author_login_from_info(entry),
+        "source_title": _title_from_info(source_info) or _title_from_info(entry),
+        "validation": validation,
+        "paths": _target_paths_from_evidence(candidate, validation, target_diff_files),
+    }
+
+
+def _same_author_pr_rule(ctx):
+    if (
+        ctx["db_type"] == "pr"
+        and ctx["target_author"]
+        and ctx["source_author"]
+        and ctx["target_author"] == ctx["source_author"]
+    ):
+        return "same_author_pr"
+    return None
+
+
+def _top_level_legal_metadata_rule(ctx):
+    if _all_changed_paths_are_top_level_legal_metadata(ctx["target_diff_files"]):
+        return "top_level_legal_metadata_only"
+    return None
+
+
+def _generated_command_metadata_rule(ctx):
+    paths = ctx["paths"]
+    if paths and all(_is_generated_command_metadata(path) for path in paths):
+        return "generated_command_metadata_only"
+    return None
+
+
+def _release_aggregation_rule(ctx):
+    if (
+        ctx["db_type"] == "pr"
+        and _looks_like_release_aggregation_title(ctx["source_title"])
+        and _looks_like_release_aggregation_title(ctx["target_title"])
+    ):
+        return "release_aggregation_candidate"
+    return None
+
+
+def _low_signal_repository_metadata_rule(ctx):
+    if _has_only_low_signal_repository_metadata(ctx["paths"], ctx["target_diff_files"], ctx["config"]):
+        return "low_signal_repository_metadata_only"
+    return None
+
+
+def _low_signal_release_test_backport_rule(ctx):
+    if _is_low_signal_release_test_backport(
+        ctx["paths"],
+        ctx["target_diff_files"],
+        ctx["config"],
+        ctx["target_title"],
+    ):
+        return "low_signal_release_test_backport"
+    return None
+
+
+def _low_scope_isolated_layer2_file_match_rule(ctx):
+    if _is_low_scope_isolated_layer2_file_match(
+        ctx["method"],
+        ctx["validation"],
+        ctx["target_diff_files"],
+        ctx["config"],
+    ):
+        return "low_scope_isolated_layer2_file_match"
+    return None
+
+
+FALSE_POSITIVE_RULES = (
+    _same_author_pr_rule,
+    _top_level_legal_metadata_rule,
+    _generated_command_metadata_rule,
+    _release_aggregation_rule,
+    _low_signal_repository_metadata_rule,
+    _low_signal_release_test_backport_rule,
+    _low_scope_isolated_layer2_file_match_rule,
+)
+
+
 def evaluate_false_positive_filter(
     *,
     candidate,
@@ -764,38 +729,22 @@ def evaluate_false_positive_filter(
     source_info=None,
     validation=None,
 ):
-    """Central policy for suppressing candidates that are known false positives."""
-    entry = candidate.get("entry", {}) if isinstance(candidate, dict) else {}
-    source_info = source_info or {}
-    source_author = author_login_from_info(source_info) or author_login_from_info(entry)
-    target_author = _normalize_login(target_author)
-    if db_type == "pr" and target_author and source_author and target_author == source_author:
-        return {"filtered": True, "reason": "same_author_pr"}
-
-    if _all_changed_paths_are_top_level_legal_metadata(target_diff_files):
-        return {"filtered": True, "reason": "top_level_legal_metadata_only"}
-
-    paths = _target_paths_from_evidence(candidate, validation, target_diff_files)
-    if paths and all(_is_generated_command_metadata(path) for path in paths):
-        return {"filtered": True, "reason": "generated_command_metadata_only"}
-
-    source_title = _title_from_info(source_info) or _title_from_info(entry)
-    if (
-        db_type == "pr"
-        and _looks_like_release_aggregation_title(source_title)
-        and _looks_like_release_aggregation_title(target_title)
-    ):
-        return {"filtered": True, "reason": "release_aggregation_candidate"}
-
-    if _has_only_low_signal_repository_metadata(paths, target_diff_files, config):
-        return {"filtered": True, "reason": "low_signal_repository_metadata_only"}
-
-    if _is_low_signal_release_test_backport(paths, target_diff_files, config, target_title):
-        return {"filtered": True, "reason": "low_signal_release_test_backport"}
-
-    if _is_low_scope_isolated_layer2_file_match(method, validation, target_diff_files, config):
-        return {"filtered": True, "reason": "low_scope_isolated_layer2_file_match"}
-
+    """Central policy dispatcher for suppressing known false positives."""
+    ctx = _false_positive_context(
+        candidate,
+        db_type,
+        method,
+        config,
+        target_author,
+        target_title,
+        target_diff_files,
+        source_info,
+        validation,
+    )
+    for rule in FALSE_POSITIVE_RULES:
+        reason = rule(ctx)
+        if reason:
+            return {"filtered": True, "reason": reason}
     return {"filtered": False, "reason": None}
 
 

@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import gzip
@@ -17,9 +18,9 @@ from common import (
     normalize_diff,
     compute_patch_id,
     load_db,
-    ProvenanceConfig,
     logger,
 )
+from config import ProvenanceConfig, config_from_args
 
 PROGRESS_INTERVAL = 100
 
@@ -60,7 +61,7 @@ def clone_and_process(args, config):
         with gzip.open(args.out_db, "wt", encoding="utf-8") as f: json.dump(output, f, indent=2)
         logger.info(f"Wrote {len(commits)} commits to {args.out_db}")
     finally:
-        subprocess.run(["rm", "-rf", temp_dir])
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Build commit fingerprint database")
@@ -82,18 +83,7 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    bps = [tuple(p.split(":")) for p in args.branding_pairs.split(",")] if args.branding_pairs else []
-    pps = [tuple(p.split(":")) for p in args.prefix_pairs.split(",")] if args.prefix_pairs else []
-    config = ProvenanceConfig(
-        source_repo=args.source_repo,
-        target_repo="",
-        branding_pairs=bps,
-        prefix_pairs=pps,
-        source_brand=args.source_brand,
-        target_brand=args.target_brand,
-        source_prefix=args.source_prefix,
-        target_prefix=args.target_prefix
-    )
+    config = config_from_args(args, source_repo=args.source_repo, target_repo="")
     clone_and_process(args, config)
 
 if __name__ == "__main__": main()
