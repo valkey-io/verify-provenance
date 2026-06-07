@@ -41,6 +41,14 @@ LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_TOKENS = 120
 LAYER2_LOW_SCOPE_SINGLE_FILE_MAX_LINES = 30
 LAYER2_RELATED_PEER_MIN_SIMILARITY = 0.85
 LAYER2_RELATED_PEER_MIN_TOKENS = 40
+REPORTABLE_FUZZY_MIN_TARGET_TOKENS = 80
+REPORTABLE_FUZZY_MIN_MEANINGFUL_SHARED_TOKENS = 20
+REPORTABLE_FUZZY_MIN_TARGET_OVERLAP = 0.90
+REPORTABLE_FUZZY_MIN_SOURCE_OVERLAP = 0.60
+REPORTABLE_FUZZY_BALANCED_MIN_SHARED_TOKENS = 50
+REPORTABLE_FUZZY_BALANCED_MIN_MEANINGFUL_SHARED_TOKENS = 10
+REPORTABLE_FUZZY_BALANCED_MIN_TARGET_OVERLAP = 0.75
+REPORTABLE_FUZZY_BALANCED_MIN_SOURCE_OVERLAP = 0.70
 FUZZY_CROSS_PATH_DATA_EXTENSIONS = {".json", ".yaml", ".yml"}
 LOW_SIGNAL_TEST_BACKPORT_MAX_TOKENS = 80
 LOW_SIGNAL_TEST_BACKPORT_MAX_LINES = 30
@@ -907,3 +915,64 @@ def deep_compare_diffs(valkey_diff, redis_diff, config, matched_file=None):
     final_similarity = max(weighted_sim, subset_ratio)
 
     return final_similarity, len(intersection), len(union)
+
+
+def _changed_line_tokens(diff_text, config):
+    return normalize_diff(diff_text, config, include_context=False).split()
+
+
+def _counter_overlap_size(left, right):
+    from collections import Counter
+
+    return sum((Counter(left) & Counter(right)).values())
+
+
+def reportable_fuzzy_match(target_diff, source_diff, config):
+    """Return whether a fuzzy match is strong enough to fail a public check.
+
+    SimHash/deep similarity is intentionally broad and is useful for candidate
+    discovery. The public gate should only fail when changed-line tokens show a
+    substantial near-duplicate patch, while exact patch-id based matches are
+    handled separately.
+    """
+    target_tokens = _changed_line_tokens(target_diff, config)
+    source_tokens = _changed_line_tokens(source_diff, config)
+    if not target_tokens or not source_tokens:
+        return {
+            "reportable": False,
+            "reason": "no_changed_tokens",
+            "target_tokens": len(target_tokens),
+            "source_tokens": len(source_tokens),
+        }
+
+    shared_tokens = _counter_overlap_size(target_tokens, source_tokens)
+    meaningful_shared = _counter_overlap_size(
+        _meaningful_tokens(target_tokens),
+        _meaningful_tokens(source_tokens),
+    )
+    target_overlap = shared_tokens / len(target_tokens)
+    source_overlap = shared_tokens / len(source_tokens)
+    high_target_overlap = (
+        len(target_tokens) >= REPORTABLE_FUZZY_MIN_TARGET_TOKENS
+        and meaningful_shared >= REPORTABLE_FUZZY_MIN_MEANINGFUL_SHARED_TOKENS
+        and target_overlap >= REPORTABLE_FUZZY_MIN_TARGET_OVERLAP
+        and source_overlap >= REPORTABLE_FUZZY_MIN_SOURCE_OVERLAP
+    )
+    balanced_substantial_overlap = (
+        shared_tokens >= REPORTABLE_FUZZY_BALANCED_MIN_SHARED_TOKENS
+        and meaningful_shared >= REPORTABLE_FUZZY_BALANCED_MIN_MEANINGFUL_SHARED_TOKENS
+        and target_overlap >= REPORTABLE_FUZZY_BALANCED_MIN_TARGET_OVERLAP
+        and source_overlap >= REPORTABLE_FUZZY_BALANCED_MIN_SOURCE_OVERLAP
+    )
+    reportable = high_target_overlap or balanced_substantial_overlap
+    reason = None if reportable else "not_near_duplicate_changed_lines"
+    return {
+        "reportable": reportable,
+        "reason": reason,
+        "target_tokens": len(target_tokens),
+        "source_tokens": len(source_tokens),
+        "shared_tokens": shared_tokens,
+        "meaningful_shared_tokens": meaningful_shared,
+        "target_overlap": target_overlap,
+        "source_overlap": source_overlap,
+    }

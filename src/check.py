@@ -192,6 +192,7 @@ def _deep_validation_result(
     if policy["exempt"]:
         return None
     evidence = None
+    reportability = {"reportable": True, "reason": None}
     if method == "file_simhash+deep" and match:
         evidence = build_layer2_file_evidence(
             target_path=match.get("target"),
@@ -205,6 +206,10 @@ def _deep_validation_result(
             shared_tokens=shared_tokens,
             patch_id_match=bool(match.get("patch_id_match")),
         )
+        if not match.get("patch_id_match"):
+            reportability = reportable_fuzzy_match(target_diff, source_diff, config)
+    elif method == "whole_simhash+deep":
+        reportability = reportable_fuzzy_match(target_diff, source_diff, config)
     return {
         "accepted": True,
         "score": score,
@@ -212,6 +217,8 @@ def _deep_validation_result(
         "matched_files": matched_files or [],
         "source_info": source_info,
         "evidence": evidence,
+        "reportability": reportability,
+        "reportable": reportability.get("reportable", True),
     }
 
 def layer2_validate_candidate(valkey_diff_files, candidate, db_type, config, token=None, source_provider=None):
@@ -399,6 +406,13 @@ def find_matches(
 
         validation = layer2_validate_candidate(diff_files, cand, db_type, config, token, provider)
         if not validation or validation["score"] < threshold:
+            continue
+        if not validation.get("reportable", True):
+            logger.debug(
+                "Filtered candidate %s as %s",
+                cand.get("key"),
+                (validation.get("reportability") or {}).get("reason", "not_reportable"),
+            )
             continue
         if _false_positive_filtered(
             cand,

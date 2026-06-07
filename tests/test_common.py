@@ -21,6 +21,7 @@ from common import (
     normalize_identifier,
     deep_compare_diffs,
     detect_code_movement,
+    reportable_fuzzy_match,
     evaluate_diff_exemption,
     is_infrastructure_file,
     filter_branding_changes,
@@ -237,7 +238,118 @@ class TestDeepComparison(unittest.TestCase):
         sim, _, _ = deep_compare_diffs(n, h, self.config)
         self.assertGreaterEqual(sim, 0.95)
 
+    def test_reportable_fuzzy_match_rejects_small_common_test_harness(self):
+        target = "\n".join([
+            '+test {corrupt payload: stream length inconsistent with valid entries} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r restore _stream 0 "\\x15\\x01"} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        assert_equal [r ping] "PONG"',
+            '+    }',
+            '+}',
+        ])
+        source = "\n".join([
+            '+test {corrupt payload: stream listpack with wrong deleted count in header} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r RESTORE mystream 0 "\\x1A\\x01" REPLACE} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        r ping',
+            '+    }',
+            '+}',
+        ] + [
+            f'+test {{source-only corrupt payload variant {i}}} {{ set extra_{i} [expr {i} + 1] }}'
+            for i in range(8)
+        ])
 
+        result = reportable_fuzzy_match(target, source, self.config)
+
+        self.assertFalse(result["reportable"])
+        self.assertEqual(result["reason"], "not_near_duplicate_changed_lines")
+
+    def test_reportable_fuzzy_match_accepts_substantial_near_duplicate(self):
+        target = "\n".join([f"+result += copied_algorithm_step_{i}(ctx);" for i in range(100)])
+        source = "\n".join([f"+result += copied_algorithm_step_{i}(ctx);" for i in range(100)])
+
+        result = reportable_fuzzy_match(target, source, self.config)
+
+        self.assertTrue(result["reportable"])
+        self.assertGreaterEqual(result["target_overlap"], 0.90)
+        self.assertGreaterEqual(result["source_overlap"], 0.60)
+
+    def test_reportable_fuzzy_match_accepts_balanced_substantial_overlap(self):
+        target = "\n".join(
+            [f"+assert_equal [call copied_proc_{i} $arg] copied_value_{i}" for i in range(7)]
+        )
+        source = "\n".join(
+            [f"+assert_equal [call copied_proc_{i} $arg] copied_value_{i}" for i in range(7)]
+        )
+
+        result = reportable_fuzzy_match(target, source, self.config)
+
+        self.assertTrue(result["reportable"])
+        self.assertGreaterEqual(result["shared_tokens"], 50)
+        self.assertLess(result["target_tokens"], 80)
+
+    def test_reportable_fuzzy_match_rejects_subset_of_larger_aggregation(self):
+        copied = [f"+if (config_slot_{i} && copied_setting_{i}) update_config(ctx, {i});" for i in range(10)]
+        source_extra = [f"+if (source_only_slot_{i}) update_config(ctx, source_only_value_{i});" for i in range(12)]
+        target = "\n".join(copied)
+        source = "\n".join(copied + source_extra)
+
+        result = reportable_fuzzy_match(target, source, self.config)
+
+        self.assertFalse(result["reportable"])
+        self.assertGreaterEqual(result["target_overlap"], 0.90)
+        self.assertLess(result["source_overlap"], 0.60)
+
+    def test_reportable_fuzzy_match_rejects_pr3922_corrupt_payload_shape(self):
+        target = "\n".join([
+            '+test {corrupt payload: stream length inconsistent with valid entries} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r restore _tomb_stream 0 "\\x15\\x01\\x10\\x00"} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        assert_equal [r ping] "PONG"',
+            '+    }',
+            '+}',
+            '+test {corrupt payload: stream listpack with negative field count} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r restore _neg_fields 0 "\\x15\\x01\\x10\\x00"} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        assert_equal [r ping] "PONG"',
+            '+    }',
+            '+}',
+        ])
+        source = "\n".join([
+            '+test {corrupt payload: stream listpack with wrong deleted count in header} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {',
+            '+        r config set sanitize-dump-payload yes',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r RESTORE mystream 0 "\\x1A\\x01\\x10\\x00" REPLACE} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        r ping',
+            '+    }',
+            '+}',
+            '+test {corrupt payload: stream length inconsistent with live entries} {',
+            '+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {',
+            '+        r debug set-skip-checksum-validation 1',
+            '+        catch {r RESTORE mystream 0 "\\x1A\\x01\\x10\\x00" REPLACE} err',
+            '+        assert_match "*Bad data format*" $err',
+            '+        r ping',
+            '+    }',
+            '+}',
+        ] + [
+            f'+test {{source-only stream payload variant {i}}} {{ set extra_{i} [expr {i} + 1] }}'
+            for i in range(10)
+        ])
+
+        result = reportable_fuzzy_match(target, source, self.config)
+
+        self.assertFalse(result["reportable"])
+        self.assertEqual(result["reason"], "not_near_duplicate_changed_lines")
 
     def test_multi_branding_normalization(self):
         """Verify that multiple branding pairs are normalized correctly."""

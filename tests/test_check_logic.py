@@ -214,6 +214,42 @@ class TestCheckLogic(unittest.TestCase):
 
     @patch("check.layer1_find_candidates")
     @patch("check.layer2_validate_candidate")
+    def test_find_matches_skips_unreportable_fuzzy_layer2_result(self, mock_layer2, mock_layer1):
+        fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
+        db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
+        mock_layer1.return_value = [
+            {
+                "key": "1",
+                "entry": {"number": 1},
+                "sim": 0.95,
+                "patch_id_match": False,
+                "signals": ["file_simhash"],
+                "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+            }
+        ]
+        mock_layer2.return_value = {
+            "accepted": True,
+            "score": 0.98,
+            "method": "file_simhash+deep",
+            "matched_files": [{"target": "src/a.c", "source": "src/old.c"}],
+            "reportable": False,
+            "reportability": {"reason": "not_near_duplicate_changed_lines"},
+        }
+
+        results = find_matches(
+            fingerprint,
+            db,
+            threshold=0.90,
+            max_report=5,
+            db_type="pr",
+            config=self.config,
+            diff_files={"src/a.c": "dummy"},
+        )
+
+        self.assertEqual(results, [])
+
+    @patch("check.layer1_find_candidates")
+    @patch("check.layer2_validate_candidate")
     def test_find_matches_uses_structured_layer2_result(self, mock_layer2, mock_layer1):
         fingerprint = {"simhash64": 1, "files": {"src/a.c": {"simhash64": 1}}, "patch_id": None}
         db = {"prs": {"1": {"number": 1, "simhash64": 1, "files": {}}}}
