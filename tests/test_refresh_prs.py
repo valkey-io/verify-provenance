@@ -67,7 +67,7 @@ class TestRefreshPrs(unittest.TestCase):
         mock_gzip.return_value.__enter__.return_value = io.StringIO()
         args = MagicMock()
         args.source_owner = "redis"; args.source_repo_name = "redis"; args.cutoff_date = "2024-03-20T00:00:00Z"
-        args.out_db = "test.json.gz"; args.source_brand = "Redis"; args.target_brand = "Valkey"
+        args.out_db = "test.json.gz"; args.normalization_pairs = "Redis:Valkey"
         config = MagicMock()
         refresh_prs(args, config)
         self.assertTrue(mock_gzip.called)
@@ -88,7 +88,7 @@ class TestRefreshPrs(unittest.TestCase):
             args.cutoff_date = "2024-01-01T00:00:00Z"
             args.out_db = os.path.join(tmp_dir, "prs.json.gz")
 
-            refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+            refresh_prs(args, ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")]))
 
             with gzip.open(args.out_db, "rt", encoding="utf-8") as f:
                 data = json.load(f)
@@ -111,7 +111,7 @@ class TestRefreshPrs(unittest.TestCase):
             args.cutoff_date = "2024-01-01T00:00:00Z"
             args.out_db = os.path.join(tmp_dir, "prs.json.gz")
 
-            refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+            refresh_prs(args, ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")]))
 
             with gzip.open(args.out_db, "rt", encoding="utf-8") as f:
                 data = json.load(f)
@@ -154,7 +154,7 @@ class TestRefreshPrs(unittest.TestCase):
         args.cutoff_date = "2024-01-01T00:00:00Z"
         args.out_db = "nested/prs.json.gz"
 
-        refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+        refresh_prs(args, ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")]))
 
         mock_warning.assert_not_called()
 
@@ -174,7 +174,7 @@ class TestRefreshPrs(unittest.TestCase):
             args.cutoff_date = "2024-01-01T00:00:00Z"
             args.out_db = os.path.join(tmp_dir, "prs.json.gz")
 
-            refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+            refresh_prs(args, ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")]))
 
             with gzip.open(args.out_db, "rt", encoding="utf-8") as f:
                 data = json.load(f)
@@ -220,7 +220,7 @@ class TestRefreshPrs(unittest.TestCase):
                     f,
                 )
 
-            refresh_prs(args, ProvenanceConfig(source_brand="Redis", target_brand="Valkey"))
+            refresh_prs(args, ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")]))
 
             with gzip.open(args.out_db, "rt", encoding="utf-8") as f:
                 data = json.load(f)

@@ -96,7 +96,7 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
   python3 src/check.py <PR_NUMBER>
     --source-repo redis/redis
     --target-repo valkey-io/valkey
-    --source-brand Redis --target-brand Valkey
+    --normalization-pairs Redis:Valkey
     --pr-db tests/redis_pr_fingerprints.json.gz
     --commit-db tests/redis_commits_bootstrap.json.gz
   ```
@@ -119,7 +119,7 @@ To verify system accuracy and prevent false positives/negatives, perform backtes
 
 ### Conventions
 - **Normalization**: Always update `PRESERVED_KEYWORDS` in `common.py` if adding support for new languages (currently supports C, Python, Tcl).
-- **Branding**: The system relies on `branding_pairs` and `prefix_pairs` to normalize identifiers. New branding terms should be added to these configurations.
+- **Normalization**: The system relies on `normalization_pairs` to canonicalize identifiers. New branding, terminology, or prefix mappings should be added to this configuration.
 - **Logging**: Use the `logger` from `common.py`. Verbose mode (`--verbose`) enables DEBUG level.
 
 ## Style Guidance

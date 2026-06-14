@@ -248,50 +248,57 @@ def normalize_diff(diff_text, config, include_context=None):
     return "\n".join(lines)
 
 
+def _prefix_style_pair(source, target):
+    return any(term and term.endswith("_") for term in (source, target))
+
+
 def normalize_identifier(identifier, config):
-    """Normalize an identifier by removing branding but preserving semantic meaning."""
-    # Handle multiple prefix pairs
-    for src_p, tgt_p in config.prefix_pairs:
+    """Normalize configured identifier terms to a shared, brand-neutral form."""
+    prefix_pairs = [pair for pair in config.normalization_pairs if _prefix_style_pair(*pair)]
+    branding_pairs = [pair for pair in config.normalization_pairs if not _prefix_style_pair(*pair)]
+
+    for src_p, tgt_p in prefix_pairs:
         for prefix in [src_p, tgt_p]:
-            if not prefix: continue
+            if not prefix:
+                continue
             if identifier.startswith(prefix) or identifier.startswith(prefix.lower()):
                 return "M_" + identifier[len(prefix):]
 
-    # Handle multiple brand pairs for Module types
-    for src_b, tgt_b in config.branding_pairs:
+    for src_b, tgt_b in branding_pairs:
         for brand in [src_b, tgt_b]:
-            if not brand: continue
+            if not brand:
+                continue
             if identifier.startswith(brand + "Module"):
                 return "Module" + identifier[len(brand) + 6:]
             if identifier.startswith(brand.lower() + "Module"):
                 return "module" + identifier[len(brand) + 6:]
 
     lower_id = identifier.lower()
-
-    # Collect all terms to remove from all branding pairs
     branding_terms = set()
-    for src_b, tgt_b in config.branding_pairs:
-        if src_b: branding_terms.add(src_b.lower())
-        if tgt_b: branding_terms.add(tgt_b.lower())
-    branding_terms.add("keydb")
-
+    for src_b, tgt_b in branding_pairs:
+        if src_b:
+            branding_terms.add(src_b.lower())
+        if tgt_b:
+            branding_terms.add(tgt_b.lower())
     for term in branding_terms:
-        # Pattern 1: Prefix
         if lower_id.startswith(term):
             remainder = identifier[len(term):]
             if remainder:
-                if remainder[0] == "_": remainder = remainder[1:]
+                if remainder[0] == "_":
+                    remainder = remainder[1:]
                 return remainder if remainder else identifier
 
-        # Pattern 2: Separated
         if lower_id.startswith(term + "_"):
             return identifier[len(term) + 1 :]
 
-        # Pattern 3: Infix
         for i in range(1, len(identifier) - len(term)):
             if identifier[i : i + len(term)].lower() == term:
-                before_ok = (i == 0 or identifier[i - 1] == "_" or identifier[i].isupper())
-                after_ok = (i + len(term) >= len(identifier) or identifier[i + len(term)] == "_" or identifier[i + len(term)].isupper())
+                before_ok = i == 0 or identifier[i - 1] == "_" or identifier[i].isupper()
+                after_ok = (
+                    i + len(term) >= len(identifier)
+                    or identifier[i + len(term)] == "_"
+                    or identifier[i + len(term)].isupper()
+                )
                 if before_ok and after_ok:
                     result = identifier[:i] + identifier[i + len(term) :]
                     if i < len(result) and i > 0 and result[i - 1] == "_" and result[i] == "_":
@@ -831,22 +838,23 @@ def evaluate_diff_exemption(
 
 
 def normalize_branding_terms(text, config):
-    """Normalize all branding terms to BRAND for comparison."""
+    """Normalize configured terms to neutral placeholders for comparison."""
     patterns = []
 
-    # Add patterns for all branding pairs
-    for src_b, tgt_b in config.branding_pairs:
-        if src_b:
-            patterns.append((rf"\b{re.escape(src_b)}", "BRAND"))
-            patterns.append((rf"\b{re.escape(src_b.lower())}", "BRAND"))
-        if tgt_b:
-            patterns.append((rf"\b{re.escape(tgt_b)}", "BRAND"))
-            patterns.append((rf"\b{re.escape(tgt_b.lower())}", "BRAND"))
+    for source, target in config.normalization_pairs:
+        if _prefix_style_pair(source, target):
+            if source:
+                patterns.append((rf"\b{re.escape(source)}", "BRAND_"))
+            if target:
+                patterns.append((rf"\b{re.escape(target)}", "BRAND_"))
+            continue
 
-    # Add patterns for all prefix pairs
-    for src_p, tgt_p in config.prefix_pairs:
-        if src_p: patterns.append((rf"\b{re.escape(src_p)}", "BRAND_"))
-        if tgt_p: patterns.append((rf"\b{re.escape(tgt_p)}", "BRAND_"))
+        if source:
+            patterns.append((rf"\b{re.escape(source)}", "BRAND"))
+            patterns.append((rf"\b{re.escape(source.lower())}", "BRAND"))
+        if target:
+            patterns.append((rf"\b{re.escape(target)}", "BRAND"))
+            patterns.append((rf"\b{re.escape(target.lower())}", "BRAND"))
 
     # Generic server/sentinel patterns
     patterns.extend([

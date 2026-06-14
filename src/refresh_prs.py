@@ -169,12 +169,7 @@ def main():
     parser.add_argument("--source-repo-name", required=True)
     parser.add_argument("--cutoff-date", required=True)
     parser.add_argument("--out-db", required=True)
-    parser.add_argument("--branding-pairs", help="Source:Target,...")
-    parser.add_argument("--prefix-pairs", help="Source:Target,...")
-    parser.add_argument("--source-brand")
-    parser.add_argument("--target-brand")
-    parser.add_argument("--source-prefix")
-    parser.add_argument("--target-prefix")
+    parser.add_argument("--normalization-pairs", help="Source:Target,...")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 

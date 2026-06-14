@@ -40,10 +40,7 @@ def run_check(pr_num=None, sha=None, target_root=None):
         'python3', CHECK_SCRIPT,
         '--source-repo', 'redis/redis',
         '--target-repo', 'valkey-io/valkey',
-        '--source-brand', 'Redis',
-        '--target-brand', 'Valkey',
-        '--source-prefix', 'RM_',
-        '--target-prefix', 'VM_',
+        '--normalization-pairs', 'Redis:Valkey,RM_:VM_',
         '--pr-db', DB_PR,
         '--commit-db', DB_COMMIT,
         '--verbose'

@@ -11,11 +11,8 @@ inputs:
   target_repo:
     description: "The target repository (e.g., valkey-io/valkey)"
     required: true
-  branding_pairs:
-    description: 'Comma-separated Source:Target brand pairs (e.g., Redis:Valkey,KeyDB:Valkey)'
-    required: false
-  prefix_pairs:
-    description: 'Comma-separated Source:Target prefix pairs (e.g., RM_:VM_)'
+  normalization_pairs:
+    description: 'Comma-separated Source:Target normalization pairs (e.g., Redis:Valkey,RM_:VM_)'
     required: false
   github_token:
     description: "GitHub token"
@@ -71,14 +68,14 @@ runs:
         if [ "${{ inputs.mode }}" = "refresh" ]; then
           owner=$(echo "${{ inputs.source_repo }}" | cut -d/ -f1)
           name=$(echo "${{ inputs.source_repo }}" | cut -d/ -f2)
-          python3 ${{ github.action_path }}/src/refresh_prs.py             --source-owner "$owner"             --source-repo-name "$name"             --cutoff-date "${{ inputs.cutoff_date }}"             --out-db ".provenance-db/${{ inputs.pr_db_file }}"             --branding-pairs "${{ inputs.branding_pairs }}" --prefix-pairs "${{ inputs.prefix_pairs }}"
+          python3 ${{ github.action_path }}/src/refresh_prs.py             --source-owner "$owner"             --source-repo-name "$name"             --cutoff-date "${{ inputs.cutoff_date }}"             --out-db ".provenance-db/${{ inputs.pr_db_file }}"             --normalization-pairs "${{ inputs.normalization_pairs }}"
 
           # Move refreshed file to a known location for the caller to commit
           cp ".provenance-db/${{ inputs.pr_db_file }}" .refreshed_pr_db.json.gz
         else
           PR_NUMBER="${{ github.event.pull_request.number }}"
           set +e
-          python3 ${{ github.action_path }}/src/check.py             $PR_NUMBER             --source-repo "${{ inputs.source_repo }}"             --target-repo "${{ inputs.target_repo }}"             --branding-pairs "${{ inputs.branding_pairs }}" --prefix-pairs "${{ inputs.prefix_pairs }}"             --exclude-dirs "${{ inputs.exclude_dirs }}"             --pr-db ".provenance-db/${{ inputs.pr_db_file }}"             --commit-db ".provenance-db/${{ inputs.commit_db_file }}"             --threshold "${{ inputs.threshold }}"             --verbose 2> .provenance-output.log
+          python3 ${{ github.action_path }}/src/check.py             $PR_NUMBER             --source-repo "${{ inputs.source_repo }}"             --target-repo "${{ inputs.target_repo }}"             --normalization-pairs "${{ inputs.normalization_pairs }}"             --exclude-dirs "${{ inputs.exclude_dirs }}"             --pr-db ".provenance-db/${{ inputs.pr_db_file }}"             --commit-db ".provenance-db/${{ inputs.commit_db_file }}"             --threshold "${{ inputs.threshold }}"             --verbose 2> .provenance-output.log
           EXIT_CODE=$?
           set -e
           if [ $EXIT_CODE -eq 1 ] && grep -q "matches" .provenance-output.log; then

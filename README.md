@@ -28,8 +28,7 @@ cd ~/repos/valkey
 # 3. Run the bootstrap script (auto-detects target-repo)
 ~/repos/verify-provenance/scripts/bootstrap.sh \
   --source-repo redis/redis \
-  --source-brand Redis \
-  --target-brand Valkey
+  --normalization-pairs Redis:Valkey
 ```
 
 *Note: By default, the script indexes the source repo from **March 20, 2024** (Redis license change). Use `--cutoff-date` to override.*
@@ -58,8 +57,7 @@ jobs:
         with:
           source_repo: "redis/redis"
           target_repo: "${{ github.repository }}"
-          branding_pairs: "Redis:Valkey,KeyDB:Valkey"
-          prefix_pairs: "RM_:VM_,REDISMODULE_:VALKEYMODULE_"
+          normalization_pairs: "Redis:Valkey,RM_:VM_,REDISMODULE_:VALKEYMODULE_"
           exclude_dirs: "deps/"
           github_token: "${{ secrets.GITHUB_TOKEN }}"
 ```
@@ -71,8 +69,7 @@ jobs:
 | `mode` | Operation mode: `check` or `refresh` | `check` |
 | `source_repo` | The upstream repository (e.g., `redis/redis`) | **Required** |
 | `target_repo` | Your repository (e.g., `valkey-io/valkey`) | **Required** |
-| `branding_pairs` | Comma-separated `Source:Target` brand pairs | - |
-| `prefix_pairs` | Comma-separated `Source:Target` prefix pairs | - |
+| `normalization_pairs` | Comma-separated `Source:Target` identifier normalization pairs | - |
 | `exclude_dirs` | Comma-separated target-side directories to ignore during check mode | - |
 | `db_branch` | Orphan branch for databases | `verify-provenance-db` |
 | `pr_db_file` | Filename of PR database | `pr_fingerprints.json.gz` |

@@ -4,6 +4,7 @@ Unit tests for backtest.py behavior.
 """
 
 import os
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch, MagicMock
@@ -37,6 +38,13 @@ class TestBacktest(unittest.TestCase):
         status, detail = check_pr(1234, ["--source-repo", "redis/redis"])
         self.assertEqual(status, "FAIL")
         self.assertIn("matches redis/redis PR #1", detail)
+
+    @patch("backtest.subprocess.run")
+    def test_check_pr_timeout_reports_timeout_seconds(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(["python3", "check.py"], 5)
+        status, detail = check_pr(1234, ["--source-repo", "redis/redis"], timeout_seconds=5)
+        self.assertEqual(status, "TIMEOUT")
+        self.assertEqual(detail, "timed out after 5s")
 
     def test_parse_expected_positives(self):
         self.assertEqual(parse_expected_positives("3080, 3085,3102"), {3080, 3085, 3102})
@@ -81,8 +89,7 @@ class TestBacktest(unittest.TestCase):
             "--end", "1",
             "--source-repo", "redis/redis",
             "--target-repo", "valkey-io/valkey",
-            "--source-brand", "Redis",
-            "--target-brand", "Valkey",
+            "--normalization-pairs", "Redis:Valkey",
             "--pr-db", "tests/redis_pr_fingerprints.json.gz",
             "--commit-db", "tests/redis_commits_bootstrap.json.gz",
             "--exclude-dirs", "deps/",
@@ -91,7 +98,9 @@ class TestBacktest(unittest.TestCase):
         with patch.object(sys, "argv", argv):
             main()
 
-        common_args = mock_check_pr.call_args.args[1]
+        call_args = mock_check_pr.call_args.args
+        common_args = call_args[1]
+        self.assertEqual(call_args[2], 120)
         self.assertIn("--exclude-dirs", common_args)
         self.assertIn("deps/", common_args)
 
@@ -104,8 +113,7 @@ class TestBacktest(unittest.TestCase):
             "--end", "1",
             "--source-repo", "redis/redis",
             "--target-repo", "valkey-io/valkey",
-            "--source-brand", "Redis",
-            "--target-brand", "Valkey",
+            "--normalization-pairs", "Redis:Valkey",
             "--pr-db", "tests/redis_pr_fingerprints.json.gz",
             "--commit-db", "tests/redis_commits_bootstrap.json.gz",
             "--",

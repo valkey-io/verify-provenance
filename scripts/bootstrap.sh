@@ -2,15 +2,14 @@
 set -euo pipefail
 
 # bootstrap.sh - Setup Provenance Guard for a Target Repository
-# Usage: ./bootstrap.sh --source-repo redis/redis --source-brand Redis --target-brand Valkey
+# Usage: ./bootstrap.sh --source-repo redis/redis --normalization-pairs Redis:Valkey
 
 echo "🚀 Starting Provenance Guard Bootstrap..."
 
 # --- Defaults ---
 SOURCE_REPO=""
 TARGET_REPO=""
-SOURCE_BRAND=""
-TARGET_BRAND=""
+NORMALIZATION_PAIRS=""
 SOURCE_BRANCH="unstable"
 CUTOFF_DATE="2024-03-20T00:00:00Z" # Default to Redis license change date
 COMMIT_DB_FILE="commits_bootstrap.json.gz"
@@ -21,8 +20,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --source-repo) SOURCE_REPO="$2"; shift 2 ;;
     --target-repo) TARGET_REPO="$2"; shift 2 ;;
-    --source-brand) SOURCE_BRAND="$2"; shift 2 ;;
-    --target-brand) TARGET_BRAND="$2"; shift 2 ;;
+    --normalization-pairs) NORMALIZATION_PAIRS="$2"; shift 2 ;;
     --source-branch) SOURCE_BRANCH="$2"; shift 2 ;;
     --cutoff-date) CUTOFF_DATE="$2"; shift 2 ;;
     --db-branch) DB_BRANCH="$2"; shift 2 ;;
@@ -38,9 +36,9 @@ if [[ -z "$TARGET_REPO" ]]; then
   fi
 fi
 
-if [[ -z "$SOURCE_REPO" || -z "$SOURCE_BRAND" || -z "$TARGET_BRAND" ]]; then
+if [[ -z "$SOURCE_REPO" ]]; then
   echo "Error: Missing required arguments."
-  echo "Usage: ./bootstrap.sh --source-repo <owner/repo> --source-brand <name> --target-brand <name> [options]"
+  echo "Usage: ./bootstrap.sh --source-repo <owner/repo> --normalization-pairs <Source:Target,...> [options]"
   exit 1
 fi
 
@@ -62,8 +60,7 @@ python3 "${ACTION_ROOT}/src/bootstrap_commits.py" \
   --source-branch "$SOURCE_BRANCH" \
   --cutoff-date "$CUTOFF_DATE" \
   --out-db "$COMMIT_DB_FILE" \
-  --source-brand "$SOURCE_BRAND" \
-  --target-brand "$TARGET_BRAND"
+  --normalization-pairs "$NORMALIZATION_PAIRS"
 
 # 3. Finalize Branch
 git add "$COMMIT_DB_FILE"

@@ -44,7 +44,7 @@ def validate_backtest_results(failed, errors, expected_positives):
     return not problems, problems
 
 
-def check_pr(pr_number, common_args):
+def check_pr(pr_number, common_args, timeout_seconds=120):
     """Run provenance check on a single PR."""
     try:
         cmd = ["python3", "check.py", str(pr_number)] + common_args
@@ -52,7 +52,7 @@ def check_pr(pr_number, common_args):
             cmd,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout_seconds,
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
 
@@ -75,7 +75,7 @@ def check_pr(pr_number, common_args):
             return "ERROR", output[:200]
 
     except subprocess.TimeoutExpired:
-        return "TIMEOUT", None
+        return "TIMEOUT", f"timed out after {timeout_seconds}s"
     except OSError as e:
         return "ERROR", str(e)[:100]
 
@@ -85,15 +85,11 @@ def main():
     parser.add_argument("--end", type=int, required=True)
     parser.add_argument("--source-repo", required=True)
     parser.add_argument("--target-repo", required=True)
-    parser.add_argument("--source-brand", required=True)
-    parser.add_argument("--target-brand", required=True)
-    parser.add_argument("--source-prefix")
-    parser.add_argument("--target-prefix")
-    parser.add_argument("--branding-pairs")
-    parser.add_argument("--prefix-pairs")
+    parser.add_argument("--normalization-pairs")
     parser.add_argument("--pr-db", required=True)
     parser.add_argument("--commit-db", required=True)
     parser.add_argument("--expected-positives", help="Comma-separated PR numbers expected to be flagged")
+    parser.add_argument("--timeout-seconds", type=int, default=120, help="Per-PR check timeout")
     parser.add_argument("--verbose", action="store_true")
 
     args, extra = parser.parse_known_args()
@@ -109,15 +105,10 @@ def main():
     common_args = [
         "--source-repo", args.source_repo,
         "--target-repo", args.target_repo,
-        "--source-brand", args.source_brand,
-        "--target-brand", args.target_brand,
         "--pr-db", pr_db_abs,
         "--commit-db", commit_db_abs
     ]
-    if args.source_prefix: common_args.extend(["--source-prefix", args.source_prefix])
-    if args.target_prefix: common_args.extend(["--target-prefix", args.target_prefix])
-    if args.branding_pairs: common_args.extend(["--branding-pairs", args.branding_pairs])
-    if args.prefix_pairs: common_args.extend(["--prefix-pairs", args.prefix_pairs])
+    if args.normalization_pairs: common_args.extend(["--normalization-pairs", args.normalization_pairs])
     if args.verbose: common_args.append("--verbose")
     if extra and extra[0] == "--":
         extra = extra[1:]
@@ -139,7 +130,7 @@ def main():
 
     total = args.end - args.start + 1
     for i, pr_num in enumerate(range(args.start, args.end + 1), 1):
-        status, detail = check_pr(pr_num, common_args)
+        status, detail = check_pr(pr_num, common_args, args.timeout_seconds)
 
         if i == 1 or i % 20 == 0 or i == total:
             logger.info(f"Progress: {i}/{total} ({100 * i // total}%)")

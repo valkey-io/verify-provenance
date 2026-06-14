@@ -53,8 +53,7 @@ class TestCommonCore(unittest.TestCase):
 class TestNormalization(unittest.TestCase):
     def setUp(self):
         self.config = ProvenanceConfig(
-            source_brand="Redis", target_brand="Valkey",
-            source_prefix="RM_", target_prefix="VM_",
+            normalization_pairs=[("Redis", "Valkey"), ("RM_", "VM_")],
             infrastructure_patterns=[".github/", "deps/", "README", "Makefile"]
         )
 
@@ -152,7 +151,7 @@ class TestNormalization(unittest.TestCase):
 
     def test_config_with_special_characters(self):
         """Ensure branding terms with regex meta-characters are handled safely."""
-        cfg = ProvenanceConfig(source_brand="C++")
+        cfg = ProvenanceConfig(normalization_pairs=[("C++", "")])
         diff = "+int C++_Val = 1;"
         norm = normalize_diff(diff, cfg)
         self.assertIn("int C ++ _Val = NUM ;", norm)
@@ -161,22 +160,19 @@ class TestNormalization(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_pair_list("Redis-Valkey")
 
-    def test_config_from_args_preserves_legacy_single_pairs(self):
+    def test_config_from_args_uses_normalization_pairs_only(self):
         class Args:
             source_repo = "redis/redis"
             target_repo = "valkey-io/valkey"
-            branding_pairs = "Redis:Valkey,KeyDB:Valkey"
-            prefix_pairs = "RM_:VM_"
+            normalization_pairs = "Redis:Valkey,RM_:VM_"
             infrastructure_patterns = ".github/,deps/"
             exclude_dirs = "deps/"
-            source_brand = None
-            target_brand = None
-            source_prefix = "REDISMODULE_"
-            target_prefix = "VALKEYMODULE_"
 
         cfg = config_from_args(Args())
-        self.assertEqual(cfg.branding_pairs, [("Redis", "Valkey"), ("KeyDB", "Valkey")])
-        self.assertEqual(cfg.prefix_pairs, [("RM_", "VM_"), ("REDISMODULE_", "VALKEYMODULE_")])
+        self.assertEqual(
+            cfg.normalization_pairs,
+            [("Redis", "Valkey"), ("RM_", "VM_")]
+        )
         self.assertEqual(cfg.infrastructure_patterns, [".github/", "deps/"])
         self.assertEqual(cfg.exclude_dirs, ["deps"])
 
@@ -222,7 +218,7 @@ class TestNormalization(unittest.TestCase):
 
 class TestDeepComparison(unittest.TestCase):
     def setUp(self):
-        self.config = ProvenanceConfig(source_brand="Redis", target_brand="Valkey")
+        self.config = ProvenanceConfig(normalization_pairs=[("Redis", "Valkey")])
 
     def test_subset_ratio_logic(self):
         """Verify that partial copies (cherry-picks) are correctly detected via subset ratio."""
@@ -351,19 +347,18 @@ class TestDeepComparison(unittest.TestCase):
         self.assertFalse(result["reportable"])
         self.assertEqual(result["reason"], "not_near_duplicate_changed_lines")
 
-    def test_multi_branding_normalization(self):
-        """Verify that multiple branding pairs are normalized correctly."""
+    def test_multi_term_normalization_uses_brand_neutral_form(self):
+        """Verify that multiple normalization pairs normalize to a shared neutral form."""
         cfg = ProvenanceConfig(
-            branding_pairs=[("Redis", "Valkey"), ("KeyDB", "Valkey")]
+            normalization_pairs=[("Redis", "Valkey")]
         )
         self.assertEqual(normalize_identifier("RedisLog", cfg), "Log")
-        self.assertEqual(normalize_identifier("KeyDBLog", cfg), "Log")
         self.assertEqual(normalize_identifier("ValkeyLog", cfg), "Log")
 
-    def test_multi_prefix_normalization(self):
-        """Verify that multiple prefix pairs are normalized correctly."""
+    def test_prefix_style_mappings_use_brand_neutral_form(self):
+        """Verify that prefix-style mappings normalize to a shared neutral prefix."""
         cfg = ProvenanceConfig(
-            prefix_pairs=[("RM_", "VM_"), ("REDISMODULE_", "VALKEYMODULE_")]
+            normalization_pairs=[("RM_", "VM_"), ("REDISMODULE_", "VALKEYMODULE_")]
         )
         self.assertEqual(normalize_identifier("RM_Call", cfg), "M_Call")
         self.assertEqual(normalize_identifier("VM_Call", cfg), "M_Call")

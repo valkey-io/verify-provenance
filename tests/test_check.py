@@ -35,8 +35,7 @@ class TestCheckCLI(unittest.TestCase):
             sys.executable, SCRIPT_PATH,
             "--source-repo", "redis/redis",
             "--target-repo", "valkey-io/valkey",
-            "--source-brand", "Redis",
-            "--target-brand", "Valkey",
+            "--normalization-pairs", "Redis:Valkey",
             "--pr-db", self.pr_db,
             "--commit-db", self.commit_db
         ]
@@ -49,7 +48,7 @@ class TestCheckCLI(unittest.TestCase):
         result = subprocess.run( [
             sys.executable, SCRIPT_PATH,
             "--source-repo", "a/b", "--target-repo", "c/d",
-            "--source-brand", "A", "--target-brand", "B",
+            "--normalization-pairs", "A:B",
             "--pr-db", "/nonexistent/pr.json.gz",
             "--commit-db", "/nonexistent/commit.json.gz",
             "12345"],
@@ -117,6 +116,22 @@ class TestCheckCLI(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
+    def test_legacy_single_pair_args_are_rejected(self):
+        result = subprocess.run(
+            self.common_args + ["--source-brand=Redis", "--target-brand=Valkey"],
+            capture_output=True, text=True
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unrecognized arguments", result.stderr)
+
+    def test_legacy_separate_pair_args_are_rejected(self):
+        result = subprocess.run(
+            self.common_args + ["--branding-pairs=Redis:Valkey", "--prefix-pairs=RM_:VM_"],
+            capture_output=True, text=True
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unrecognized arguments", result.stderr)
+
     @patch("check.fetch_pr_diff")
     def test_valid_pr_fetch_uses_mocked_api(self, mock_fetch_pr_diff):
         """Verify PR mode without hitting the real GitHub API."""
@@ -162,7 +177,7 @@ class TestCheckCLI(unittest.TestCase):
             shutil.rmtree(tmp_repo)
 
 
-    def test_multi_pair_arg_parsing(self):
+    def test_normalization_pair_arg_parsing(self):
         """Verify comma-separated pair arguments are accepted during execution."""
         tmp_repo = tempfile.mkdtemp()
         try:
@@ -175,8 +190,7 @@ class TestCheckCLI(unittest.TestCase):
             result = subprocess.run(
                 self.common_args + [
                     "--base-sha", "HEAD", "--head-sha", "HEAD",
-                    "--branding-pairs", "Redis:Valkey,KeyDB:Valkey",
-                    "--prefix-pairs", "RM_:VM_,REDISMODULE_:VALKEYMODULE_",
+                    "--normalization-pairs", "Redis:Valkey,RM_:VM_,REDISMODULE_:VALKEYMODULE_",
                 ],
                 capture_output=True, text=True, cwd=tmp_repo
             )

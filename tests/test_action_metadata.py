@@ -42,8 +42,9 @@ class TestActionMetadata(unittest.TestCase):
     def test_action_exposes_matching_configuration(self):
         inputs = read_action_inputs()
 
-        self.assertIn("branding_pairs", inputs)
-        self.assertIn("prefix_pairs", inputs)
+        self.assertIn("normalization_pairs", inputs)
+        self.assertNotIn("branding_pairs", inputs)
+        self.assertNotIn("prefix_pairs", inputs)
         self.assertIn("exclude_dirs", inputs)
 
     def test_check_step_passes_excluded_directories(self):

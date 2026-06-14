@@ -24,8 +24,7 @@ class TestBootstrapCommits(unittest.TestCase):
             "--source-repo", "redis/redis",
             "--cutoff-date", "2024-03-20T00:00:00Z",
             "--out-db", "test.json.gz",
-            "--source-brand", "Redis",
-            "--target-brand", "Valkey"
+            "--normalization-pairs", "Redis:Valkey"
         ]
         with patch.object(sys, 'argv', test_args):
             main()
